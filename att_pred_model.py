@@ -25,7 +25,7 @@ def positional_encoding(position, d_model):
 
     pos_encoding = pos_encoding[np.newaxis, ...]
 
-    return torch.tensor(pos_encoding, dtype=torch.float32, device=torch.device('cuda:0'))
+    return torch.tensor(pos_encoding, dtype=torch.float32)
 
 def scaled_dot_product_attention(q, k, v, mask):
     """Calculate the attention weights.
@@ -147,16 +147,17 @@ class PreAttModel(nn.Module):
         self.layer = layers
         self.m = nn.ModuleList([EncoderLayer(d_model, num_heads, dff, rate) for _ in range(layers)])
         self.out_layer = nn.Linear(d_model, 1)
-        self.pos_encoding = positional_encoding(10000, d_model)
+        # self.pos_encoding = positional_encoding(10000, d_model)
         self.layernorm = nn.LayerNorm(d_model, eps=1e-6)
         self.dropout = nn.Dropout(rate)
 
-    def forward(self, inp, mask):
+    def forward(self, inp, mask, pos):
         batch = inp.size()[0]
         seq_len = inp.size()[1]
         mask = create_padding_mask(mask)
-        # print(mask.shape)
-        h = inp + self.pos_encoding[:, :seq_len, :]
+
+        h = inp + pos[:, :seq_len, :]
+
         h = self.layernorm(self.dropout(h))
         for i in range(self.layer):
             h = self.m[i](h, mask)
@@ -167,4 +168,4 @@ class PreAttModel(nn.Module):
         logits += mask * -1e19
         att_ratio = logits.softmax(1)
 
-        return att_ratio    # shape == (batch_size, seq_len)
+        return att_ratio   # shape == (batch_size, seq_len)

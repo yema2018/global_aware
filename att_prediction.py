@@ -1,6 +1,7 @@
 from att_pred_model import PreAttModel
 from adabelief_pytorch import AdaBelief
 import torch
+import torch.nn as nn
 import time
 from generate_batch import gen_bt
 import numpy as np
@@ -8,7 +9,7 @@ from transformers import BartTokenizer, BartForConditionalGeneration, get_cosine
 
 
 class PreAtt(object):
-    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs):
+    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, layers):
         self.epoch = epoch
         self.tokenizer = tokenizer
         self.bs = bs
@@ -17,12 +18,8 @@ class PreAtt(object):
         self.ckpt = ckpt
         for p in self.summ.parameters():
             p.requires_grad = False
-        self.pre_att_model = PreAttModel(layers=1, d_model=1024, num_heads=16, dff=4096, rate=0.1)
-
-        self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=5e-4, eps=1e-16, betas=(0.9, 0.999),
-                                   weight_decay=1e-4, weight_decouple=True, rectify=True)
-        # lr = get_cosine_schedule_with_warmup(torch.optim.Adam, 50000, 100000)
-        # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters())
+        self.pre_att_model = PreAttModel(layers=layers, d_model=1024, num_heads=16, dff=4096, rate=0.1)
+        self.parallel_loss = ParallelLoss()
 
         try:
             self.pre_att_model.load_state_dict(torch.load(ckpt))
@@ -30,16 +27,36 @@ class PreAtt(object):
         except:
             print('no checkpoints now!')
 
-        self.loss = torch.nn.MSELoss(reduction='mean')
-        self.device = torch.device('cuda:0')
+        self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=5e-4, eps=1e-16, betas=(0.9, 0.999),
+                                   weight_decay=1e-4, weight_decouple=True, rectify=True)
+        # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters(), lr=1e-3)
+        # self.loss = torch.nn.MSELoss(reduction='mean')
+
+        if torch.cuda.device_count() > 1:
+            print("Let's use", torch.cuda.device_count(), "GPUs!")
+            # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
+            self.pre_att_model = torch.nn.DataParallel(self.pre_att_model)
+            self.summ = torch.nn.DataParallel(self.summ)
+            self.parallel_loss = torch.nn.DataParallel(self.parallel_loss)
+
+        # lr = get_cosine_schedule_with_warmup(torch.optim.Adam, 50000, 100000)
+        # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters())
+
+        self.device = torch.device('cuda')
+        self.pos = positional_encoding(2000, 1024).to(self.device)
         self.summ.to(self.device)
         self.pre_att_model.to(self.device)
+        self.parallel_loss.to(self.device)
 
-    def pre_model(self):
+    def ex_pred(self, inp, masks):
         self.pre_att_model.eval()
-        for p in self.pre_att_model.parameters():
-            p.requires_grad = False
-        return self.pre_att_model
+        with torch.no_grad():
+            a = self.pre_att_model(inp, masks)
+        return a
+
+    def summ_encoder(self):
+
+        return self.summ.get_encoder()
 
     def cal_att_dist(self, inp, tar, inp_mask, tar_mask):
         summ_output = self.summ(input_ids=inp, attention_mask=inp_mask, decoder_input_ids=tar[:, :-1],
@@ -55,7 +72,9 @@ class PreAtt(object):
         # print(torch.sum(opt_att_dist))
         last_encoder_hidden = summ_output[3]
         # print(inp_mask)
-        pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask)
+
+        pre_att_dist = self.pre_att_model.module(last_encoder_hidden, inp_mask, self.pos)
+        # print(pre_att_dist.device)
 
         return opt_att_dist, pre_att_dist
 
@@ -76,14 +95,15 @@ class PreAtt(object):
                 self.optimizer.zero_grad()
 
                 opt_att_dist, pre_att_dist = self.cal_att_dist(inp, tar, inp_mask, tar_mask)
-                # print(pre_att_dist)
+                # print(pre_att_dist.shape)
+                # print(opt_att_dist.shape)
 
-                loss = self.loss(pre_att_dist.view(-1), opt_att_dist.view(-1))
+                loss = self.parallel_loss.module(pre_att_dist, opt_att_dist)
                 loss.backward()
                 self.optimizer.step()
 
                 total_loss.append(loss.item())
-                if batch % 200 == 0 and batch > 0:
+                if batch % 50 == 0 and batch > 0:
                     elapsed = time.time() - start_time
                     cur_loss = np.mean(total_loss)
                     print('| epoch {:3d} | {:5d} batches | '
@@ -92,7 +112,7 @@ class PreAtt(object):
                         epoch, batch,
                         elapsed * 1000 / len(total_loss), cur_loss*10000, np.exp(cur_loss)))
             cur_loss = np.mean(total_loss)
-            torch.save(self.pre_att_model.state_dict(), '{}_{}'.format(self.ckpt, epoch))
+            torch.save(self.pre_att_model.module.state_dict(), '{}_{}'.format(self.ckpt, epoch))
             elapsed = time.time() - start_time
             print('| epoch {:3d} | '
                   ' ms/epoch {:5.2f} | '
@@ -113,14 +133,44 @@ class PreAtt(object):
                 with torch.no_grad():
                     opt_att_dist, pre_att_dist = self.cal_att_dist(inp, tar, inp_mask, tar_mask)
 
-                    loss = self.loss(pre_att_dist.view(-1), opt_att_dist.view(-1))
+                    loss = self.parallel_loss.module(pre_att_dist, opt_att_dist.view)
                     val_loss.append(loss.item())
 
             print('Validation: Loss {:.8f}'.format(np.mean(val_loss)*10000))
 
-    def pred(self, inp, masks):
-        self.pre_att_model.eval()
-        return self.pre_att_model(inp, masks)
+
+def positional_encoding(position, d_model):
+    angle_rads = get_angles(np.arange(position)[:, np.newaxis],
+                            np.arange(d_model)[np.newaxis, :],
+                            d_model)
+
+    # apply sin to even indices in the array; 2i
+    sines = np.sin(angle_rads[:, 0::2])
+
+    # apply cos to odd indices in the array; 2i+1
+    cosines = np.cos(angle_rads[:, 1::2])
+
+    pos_encoding = np.concatenate([sines, cosines], axis=-1)
+
+    pos_encoding = pos_encoding[np.newaxis, ...]
+
+    return torch.tensor(pos_encoding, dtype=torch.float32)
+
+
+def get_angles(pos, i, d_model):
+  angle_rates = 1 / np.power(10000, (2 * (i//2)) / np.float32(d_model))
+  return pos * angle_rates
+
+
+class ParallelLoss(nn.Module):
+    def __init__(self):
+        super(ParallelLoss, self).__init__()
+        self.loss = torch.nn.MSELoss(reduction='mean')
+
+    def forward(self, opt, pre):
+        loss = self.loss(pre.view(-1), opt.view(-1))
+
+        return loss.mean()
 
 
 if __name__ == '__main__':
