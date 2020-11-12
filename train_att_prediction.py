@@ -8,35 +8,20 @@ import numpy as np
 from transformers import BartTokenizer, BartForConditionalGeneration, get_cosine_schedule_with_warmup
 
 
-class PreAtt(object):
+class TrainPreAtt(object):
     def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, layers):
         self.epoch = epoch
         self.tokenizer = tokenizer
         self.bs = bs
-        self.summ = summ_model
-        self.summ.eval()
         self.ckpt = ckpt
-        for p in self.summ.parameters():
-            p.requires_grad = False
-        self.pre_att_model = PreAttModel(layers=layers, d_model=1024, num_heads=16, dff=4096, rate=0.1)
 
-        try:
-            self.pre_att_model.load_state_dict(torch.load(ckpt))
-            print('load {}'.format(ckpt))
-        except:
-            print('no checkpoints now!')
-
-        self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=5e-4, eps=1e-16, betas=(0.9, 0.999),
-                                   weight_decay=1e-4, weight_decouple=True, rectify=True)
-        # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters(), lr=1e-3)
-        # self.loss = torch.nn.MSELoss(reduction='mean')
-        self.parallel_loss = ParallelLoss()
+        self.parallel_loss = ParallelLoss(summ_model, ckpt, layers)
+        self.pre_att_model = self.parallel_loss.pre_att_model
+        self.optimizer = self.parallel_loss.optimizer
 
         if torch.cuda.device_count() > 1:
             print("Let's use", torch.cuda.device_count(), "GPUs!")
             # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
-            self.pre_att_model = torch.nn.DataParallel(self.pre_att_model)
-            self.summ = torch.nn.DataParallel(self.summ)
             self.parallel_loss = torch.nn.DataParallel(self.parallel_loss)
 
         # lr = get_cosine_schedule_with_warmup(torch.optim.Adam, 50000, 100000)
@@ -44,39 +29,7 @@ class PreAtt(object):
 
         self.device = torch.device('cuda')
         self.pos = positional_encoding(2000, 1024).to(self.device)
-        self.summ.to(self.device)
-        self.pre_att_model.to(self.device)
         self.parallel_loss.to(self.device)
-
-    def ex_pred(self, inp, masks):
-        self.pre_att_model.eval()
-        with torch.no_grad():
-            a = self.pre_att_model(inp, masks)
-        return a
-
-    def summ_encoder(self):
-
-        return self.summ.get_encoder()
-
-    def cal_att_dist(self, inp, tar, inp_mask, tar_mask):
-        summ_output = self.summ(input_ids=inp, attention_mask=inp_mask, decoder_input_ids=tar[:, :-1],
-                                decoder_attention_mask=tar_mask[:, :-1], output_attentions=True,
-                                output_hidden_states=True)
-
-        decoder_att = summ_output[2]
-        opt_att_dist = 0
-        for _ in decoder_att:
-            opt_att_dist += _[:, :, :, -inp.size()[1]:]
-        opt_att_dist = torch.mean(torch.mean(opt_att_dist, dim=1), dim=1)
-        opt_att_dist /= torch.sum(opt_att_dist, dim=1, keepdim=True)
-        # print(torch.sum(opt_att_dist))
-        last_encoder_hidden = summ_output[3]
-        # print(inp_mask)
-        pos = torch.repeat_interleave(self.pos, int(last_encoder_hidden.shape[0]), dim=0)
-        pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask, pos)
-        # print(pre_att_dist.device)
-
-        return opt_att_dist, pre_att_dist
 
     def train(self):
         for epoch in range(self.epoch):
@@ -91,14 +44,11 @@ class PreAtt(object):
                 tar = tar.to(self.device)
                 inp_mask = inp_mask.to(self.device)
                 tar_mask = tar_mask.to(self.device)
+                pos = torch.repeat_interleave(self.pos, int(inp.shape[0]), dim=0)
 
                 self.optimizer.zero_grad()
 
-                opt_att_dist, pre_att_dist = self.cal_att_dist(inp, tar, inp_mask, tar_mask)
-                # print(pre_att_dist.shape)
-                # print(opt_att_dist.shape)
-
-                loss = self.parallel_loss(pre_att_dist, opt_att_dist).mean()
+                loss = self.parallel_loss(inp, tar, inp_mask, tar_mask, pos).mean()
                 loss.backward()
                 self.optimizer.step()
 
@@ -130,10 +80,9 @@ class PreAtt(object):
                 tar = tar.to(self.device)
                 inp_mask = inp_mask.to(self.device)
                 tar_mask = tar_mask.to(self.device)
+                pos = torch.repeat_interleave(self.pos, int(inp.shape[0]), dim=0)
                 with torch.no_grad():
-                    opt_att_dist, pre_att_dist = self.cal_att_dist(inp, tar, inp_mask, tar_mask)
-
-                    loss = self.parallel_loss(pre_att_dist, opt_att_dist).mean()
+                    loss = self.parallel_loss(inp, tar, inp_mask, tar_mask, pos).mean()
                     val_loss.append(loss.item())
 
             print('Validation: Loss {:.8f}'.format(np.mean(val_loss)*10000))
@@ -163,12 +112,41 @@ def get_angles(pos, i, d_model):
 
 
 class ParallelLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, summ_model, ckpt, layers):
         super(ParallelLoss, self).__init__()
         self.loss = torch.nn.MSELoss(reduction='mean')
+        self.summ = summ_model
+        self.summ.eval()
+        self.pre_att_model = PreAttModel(layers=layers, d_model=1024, num_heads=16, dff=4096, rate=0.1)
 
-    def forward(self, opt, pre):
-        loss = self.loss(pre.view(-1), opt.view(-1))
+        try:
+            self.pre_att_model.load_state_dict(torch.load(ckpt))
+            print('load {}'.format(ckpt))
+        except:
+            print('no checkpoints now!')
+
+        self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=5e-4, eps=1e-16, betas=(0.9, 0.999),
+                                   weight_decay=1e-4, weight_decouple=True, rectify=True)
+
+    def forward(self, inp, tar, inp_mask, tar_mask, pos):
+
+        with torch.no_grad():
+            summ_output = self.summ(input_ids=inp, attention_mask=inp_mask, decoder_input_ids=tar[:, :-1],
+                                    decoder_attention_mask=tar_mask[:, :-1], output_attentions=True,
+                                    output_hidden_states=True)
+
+            decoder_att = summ_output[2]
+            opt_att_dist = 0
+            for _ in decoder_att:
+                opt_att_dist += _[:, :, :, -inp.size()[1]:]
+            opt_att_dist = torch.mean(torch.mean(opt_att_dist, dim=1), dim=1)
+            opt_att_dist /= torch.sum(opt_att_dist, dim=1, keepdim=True)
+            # print(torch.sum(opt_att_dist))
+            last_encoder_hidden = summ_output[3]
+            # print(inp_mask)
+        pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask, pos)
+        # print(pre_att_dist.device)
+        loss = self.loss(pre_att_dist.view(-1), opt_att_dist.view(-1))
 
         return loss
 
@@ -176,6 +154,6 @@ class ParallelLoss(nn.Module):
 if __name__ == '__main__':
     bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn', use_cache=False)
     tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
-    a = PreAtt(bart, tokenizer, './cnndm/layer_1', 10, 3)
+    a = TrainPreAtt(bart, tokenizer, './cnndm/layer_1', 10, 3)
     a.train()
 

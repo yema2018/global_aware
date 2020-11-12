@@ -1,8 +1,9 @@
-from att_prediction import PreAtt
+from train_att_prediction import TrainPreAtt, positional_encoding
 from transformers import BartForConditionalGeneration, BartTokenizer
 from generate_batch import gen_bt
 import torch
 import argparse
+from att_pred_model import PreAttModel
 
 
 def parse_args():
@@ -35,25 +36,44 @@ def parse_args():
     return parser.parse_args()
 
 
-if __name__ == '__main__':
-    args = parse_args()
-    bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn', use_cache=False)
-    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
-    a = PreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.num_layers)
-    if args.mode == 'train':
-        a.train()
-    else:
-        encoder = a.summ_encoder()
-        device = torch.device('cuda')
-        batch_set = gen_bt(args.batch_size, tokenizer, 'test')
-        for (batch, batch_contents) in enumerate(batch_set):
-            inp, _, inp_mask, _ = batch_contents
-            inp = inp.to(device)
-            inp_mask = inp_mask.to(device)
+args = parse_args()
+
+
+def inference(summ, tokenizer):
+    pre_att_model =PreAttModel(layers=args.layers, d_model=1024, num_heads=16, dff=4096, rate=0.1)
+
+    pos_ec = positional_encoding(2000, 1024)
+    try:
+        pre_att_model.load_state_dict(torch.load(args.ckpt))
+        print('load {}'.format(args.ckpt))
+    except:
+        print('no checkpoints now!')
+
+    pre_att_model.eval()
+    summ.eval()
+    encoder = summ.get_encoder()
+
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
+        summ = torch.nn.DataParallel(summ)
+
+    device = torch.device('cuda')
+    pre_att_model.to(device)
+    encoder.to(device)
+    summ.to(device)
+    batch_set = gen_bt(args.batch_size, tokenizer, 'test')
+
+    for (batch, batch_contents) in enumerate(batch_set):
+        inp, _, inp_mask, _ = batch_contents
+        inp = inp.to(device)
+        inp_mask = inp_mask.to(device)
+        pos = torch.repeat_interleave(pos_ec, int(inp.shape[0]), dim=0).to(device)
+        with torch.no_grad():
             if args.att_aware:
                 encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
-                opt = a.ex_pred(encoder_out, inp_mask)
-                summary_ids = bart.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                opt = pre_att_model(encoder_out, inp_mask, pos)
+                summary_ids = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             max_length=args.max_length, early_stopping=True, opt_att_dist=opt,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
                                             no_repeat_ngram_size=args.no_repeat_ngram_size)
@@ -77,14 +97,12 @@ if __name__ == '__main__':
                         fw.write(i)
                         fw.write('\n')
 
-            # for j in [0.05, 0.1, 0.2, 0.3, 0.4, 0.5,0.6,0.7, 0.8, 0.9, 1, 0]:
-            #     summary_ids = bart.generate(inp, attention_mask=inp_mask, num_beams=4, max_length=200, early_stopping=True, opt_att_dist=opt, beta=j)
-            #
-            #     out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summary_ids]
-            #
-            #     for i in out_list:
-            #         with open('cnndm/abs_b{}.txt'.format(j), 'a', encoding='utf8') as fw:
-            #             fw.write(i)
-            #             fw.write('\n')
 
-            # print([tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summary_ids])
+if __name__ == '__main__':
+    bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn', use_cache=False)
+    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
+    a = TrainPreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.num_layers)
+    if args.mode == 'train':
+        a.train()
+    else:
+        inference(bart, tokenizer)
