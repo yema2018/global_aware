@@ -29,13 +29,15 @@ class PreAtt(object):
         self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=5e-4, eps=1e-16, betas=(0.9, 0.999),
                                    weight_decay=1e-4, weight_decouple=True, rectify=True)
         # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters(), lr=1e-3)
-        self.loss = torch.nn.MSELoss(reduction='mean')
+        # self.loss = torch.nn.MSELoss(reduction='mean')
+        self.parallel_loss = ParallelLoss()
 
         if torch.cuda.device_count() > 1:
             print("Let's use", torch.cuda.device_count(), "GPUs!")
             # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
             self.pre_att_model = torch.nn.DataParallel(self.pre_att_model)
             self.summ = torch.nn.DataParallel(self.summ)
+            self.parallel_loss = torch.nn.DataParallel(self.parallel_loss)
 
         # lr = get_cosine_schedule_with_warmup(torch.optim.Adam, 50000, 100000)
         # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters())
@@ -44,6 +46,7 @@ class PreAtt(object):
         self.pos = positional_encoding(2000, 1024).to(self.device)
         self.summ.to(self.device)
         self.pre_att_model.to(self.device)
+        self.parallel_loss.to(self.device)
 
     def ex_pred(self, inp, masks):
         self.pre_att_model.eval()
@@ -92,10 +95,10 @@ class PreAtt(object):
                 self.optimizer.zero_grad()
 
                 opt_att_dist, pre_att_dist = self.cal_att_dist(inp, tar, inp_mask, tar_mask)
-                print(pre_att_dist.shape)
-                print(opt_att_dist.shape)
+                # print(pre_att_dist.shape)
+                # print(opt_att_dist.shape)
 
-                loss = self.loss(pre_att_dist.view(-1), opt_att_dist.view(-1))
+                loss = self.parallel_loss(pre_att_dist, opt_att_dist).mean()
                 loss.backward()
                 self.optimizer.step()
 
@@ -130,7 +133,7 @@ class PreAtt(object):
                 with torch.no_grad():
                     opt_att_dist, pre_att_dist = self.cal_att_dist(inp, tar, inp_mask, tar_mask)
 
-                    loss = self.loss(pre_att_dist.view(-1), opt_att_dist.view(-1))
+                    loss = self.parallel_loss(pre_att_dist, opt_att_dist).mean()
                     val_loss.append(loss.item())
 
             print('Validation: Loss {:.8f}'.format(np.mean(val_loss)*10000))
@@ -159,9 +162,15 @@ def get_angles(pos, i, d_model):
   return pos * angle_rates
 
 
+class ParallelLoss(nn.Module):
+    def __init__(self):
+        super(ParallelLoss, self).__init__()
+        self.loss = torch.nn.MSELoss(reduction='mean')
 
+    def forward(self, opt, pre):
+        loss = self.loss(pre.view(-1), opt.view(-1))
 
-
+        return loss
 
 
 if __name__ == '__main__':
