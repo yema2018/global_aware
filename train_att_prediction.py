@@ -9,13 +9,14 @@ from transformers import BartTokenizer, BartForConditionalGeneration, get_cosine
 
 
 class TrainPreAtt(object):
-    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, layers):
+    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, layers, dataset):
         self.epoch = epoch
         self.tokenizer = tokenizer
         self.bs = bs
-        self.ckpt = ckpt
+        self.ckpt = '{}/{}'.format(dataset, ckpt)
+        self.dataset = dataset
 
-        self.parallel_loss = ParallelLoss(summ_model, ckpt, layers)
+        self.parallel_loss = ParallelLoss(summ_model, self.ckpt, layers)
         self.pre_att_model = self.parallel_loss.pre_att_model
         self.optimizer = self.parallel_loss.optimizer
 
@@ -37,7 +38,7 @@ class TrainPreAtt(object):
             start_time = time.time()
             self.pre_att_model.train()
             print('start training')
-            batch_set = gen_bt(self.bs, self.tokenizer, 'train', shuffle=True)
+            batch_set = gen_bt(self.bs, self.tokenizer, 'train', shuffle=True, dataset=self.dataset)
             for (batch, batch_contents) in enumerate(batch_set):
                 inp, tar, inp_mask, tar_mask = batch_contents
                 inp = inp.to(self.device)
@@ -60,20 +61,20 @@ class TrainPreAtt(object):
                           ' ms/batch {:5.2f} | '
                           'loss {:5.4f} | ppl {:8.4f}'.format(
                         epoch, batch,
-                        elapsed * 1000 / len(total_loss), cur_loss*10000, np.exp(cur_loss)))
+                        elapsed * 1000 / len(total_loss), cur_loss*10000, np.exp(cur_loss*10000)))
             cur_loss = np.mean(total_loss)
-            torch.save(self.pre_att_model.module.state_dict(), '{}_{}'.format(self.ckpt, epoch))
+            torch.save(self.pre_att_model.state_dict(), '{}_{}'.format(self.ckpt, epoch))
             elapsed = time.time() - start_time
             print('| epoch {:3d} | '
                   ' ms/epoch {:5.2f} | '
                   'loss {:5.4f} | ppl {:8.4f}'.format(
-                epoch, elapsed * 1000, cur_loss*10000, np.exp(cur_loss)))
+                epoch, elapsed * 1000, cur_loss*10000, np.exp(cur_loss*10000)))
             total_loss = []
             start_time = time.time()
             print('\nstart validation')
             val_loss = []
             self.pre_att_model.eval()
-            val_batch = gen_bt(self.bs, self.tokenizer, mode='val')
+            val_batch = gen_bt(self.bs, self.tokenizer, mode='val', dataset=self.dataset)
             for (b, bc) in enumerate(val_batch):
                 inp, tar, inp_mask, tar_mask = bc
                 inp = inp.to(self.device)
@@ -86,6 +87,9 @@ class TrainPreAtt(object):
                     val_loss.append(loss.item())
 
             print('Validation: Loss {:.8f}'.format(np.mean(val_loss)*10000))
+            with open('records for {}.txt'.format(self.ckpt.replace('/', '_')), 'a') as fw:
+                fw.write('epoch{}: {}'.format(epoch, np.mean(val_loss)*10000))
+                fw.write('\n')
 
 
 def positional_encoding(position, d_model):

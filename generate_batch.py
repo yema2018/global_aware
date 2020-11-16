@@ -2,10 +2,19 @@ import json
 import numpy as np
 
 
-def gen_bt(bs, tokenizer, mode, data='cnndm', shuffle=False):
-    data = [json.loads(i) for i in open('{}/{}.json'.format(data, mode), encoding='utf8')]
-    src = [' '.join(i['src']) for i in data]
-    tgt = [' '.join(i['tgt']) for i in data]
+def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
+    data = [json.loads(i) for i in open('{}/{}.json'.format(dataset, mode), encoding='utf8')]
+    tgt = [i['tgt'] for i in data]
+
+    if dataset == 'cnndm':
+        src = []
+        for i in data:
+            text = i['src']
+            if text[:5] == '(CNN)':
+                text = text[5:]
+            src.append(text)
+    else:
+        src = [i['src'] for i in data]
 
     if shuffle:
         cc = list(zip(src, tgt))
@@ -20,7 +29,7 @@ def gen_bt(bs, tokenizer, mode, data='cnndm', shuffle=False):
         source = src[begin:stop]
         target = tgt[begin:stop]
 
-        sources = tokenizer(source, return_tensors='pt', max_length=800, padding=True, truncation=True)
+        sources = tokenizer(source, return_tensors='pt', max_length=1024, padding=True, truncation=True)
         targets = tokenizer(target, return_tensors='pt', max_length=200, padding=True, truncation=True)
 
         yield sources['input_ids'], targets['input_ids'], sources['attention_mask'], targets['attention_mask']
