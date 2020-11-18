@@ -8,8 +8,7 @@ import time
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Run graph2vec based MDS tasks.')
-    parser.add_argument('--mode', nargs='?', default='train', help='must be the train/gen')
+    parser = argparse.ArgumentParser(description='Attention-aware Inference')
     parser.add_argument('--ckpt', nargs='?', default='', help='checkpoint path')
     parser.add_argument('--dataset', nargs='?', default='', help='cnndm or xsum')
 
@@ -35,9 +34,11 @@ def parse_args():
     parser.add_argument('--cuda', type=int, default=0,
                         help='the index of cuda used.')
 
+    parser.add_argument('--train', dest='train', action='store_true', help='training.')
     parser.add_argument('--att_aware', dest='att_aware', action='store_true',
-                        help='Boolean specifying using att-aware or vanilla beam search')
-    parser.add_argument('--vanilla', dest='vanilla', action='store_false')
+                        help='enter attention-aware inference.')
+    parser.add_argument('--vanilla', dest='vanilla', action='store_true', help='enter vanilla beam search.')
+    parser.add_argument('--cheat', dest='cheat', action='store_true', help='enter cheating att-aware inference.')
 
     return parser.parse_args()
 
@@ -62,9 +63,13 @@ def inference(summ, tokenizer):
         pre_att_model.eval()
         pre_att_model.to(device)
         encoder = summ.get_encoder()
+        encoder.eval()
         encoder.to(device)
-    else:
+    if args.vanilla:
         print('enter vanilla beam search.')
+
+    if args.cheat:
+        print('enter cheating att-aware inference.')
     summ.eval()
 
     # if torch.cuda.device_count() > 1:
@@ -76,9 +81,12 @@ def inference(summ, tokenizer):
     batch_set = gen_bt(1, tokenizer, 'test', dataset=args.dataset)
     start = time.time()
     for (batch, batch_contents) in enumerate(batch_set):
-        inp, _, inp_mask, _ = batch_contents
+        inp, tar, inp_mask, tar_mask = batch_contents
         inp = inp.to(device)
         inp_mask = inp_mask.to(device)
+        if args.cheat:
+            tar = tar.to(device)
+            tar_mask = tar_mask.to(device)
         with torch.no_grad():
             if args.att_aware:
                 pos = torch.repeat_interleave(pos_ec, int(inp.shape[0]), dim=0).to(device)
@@ -97,7 +105,7 @@ def inference(summ, tokenizer):
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
-            else:
+            if args.vanilla:
                 summary_ids = bart.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             max_length=args.max_length, early_stopping=True, opt_att_dist=None,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
@@ -110,6 +118,31 @@ def inference(summ, tokenizer):
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
+
+            if args.cheat:
+                summ_output = summ(input_ids=inp, attention_mask=inp_mask, decoder_input_ids=tar[:, :-1],
+                                        decoder_attention_mask=tar_mask[:, :-1], output_attentions=True,
+                                        output_hidden_states=True)
+
+                decoder_att = summ_output[2]
+                opt_att_dist = 0
+                for _ in decoder_att:
+                    opt_att_dist += _[:, :, :, -inp.size()[1]:]
+                opt_att_dist = torch.mean(torch.mean(opt_att_dist, dim=1), dim=1)
+                opt_att_dist /= torch.sum(opt_att_dist, dim=1, keepdim=True)
+                summary_ids = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                                            max_length=args.max_length, early_stopping=True, opt_att_dist=opt_att_dist,
+                                            beta=args.beta, repetition_penalty=args.repetition_penalty,
+                                            no_repeat_ngram_size=args.no_repeat_ngram_size, min_length=args.min_length)
+                out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
+                            summary_ids]
+                print(out_list)
+                for i in out_list:
+                    with open('cnndm/cheat_beta{}_beam{}.txt'.format(args.beta, args.beam_size),
+                              'a', encoding='utf8') as fw:
+                        fw.write(' .'.join(i.split('.')))
+                        fw.write('\n')
+
     print('inference_time: {}'.format(time.time()-start))
 
 
@@ -121,7 +154,7 @@ if __name__ == '__main__':
     bart = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
     tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab')
 
-    if args.mode == 'train':
+    if args.train:
         a = TrainPreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.num_layers, args.dataset)
         a.train()
     else:

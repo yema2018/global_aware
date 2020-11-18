@@ -150,13 +150,15 @@ class PreAttModel(nn.Module):
         # self.pos_encoding = positional_encoding(10000, d_model)
         self.layernorm = nn.LayerNorm(d_model, eps=1e-6)
         self.dropout = nn.Dropout(rate)
+        self.pos_enc = nn.Parameter(torch.zeros([1, 1024, d_model]), requires_grad=True)
 
-    def forward(self, inp, mask, pos):
+    def forward(self, inp, mask):
+
         batch = inp.size()[0]
         seq_len = inp.size()[1]
         mask = create_padding_mask(mask)
 
-        h = inp + pos[:, :seq_len, :]
+        h = inp + self.pos_enc[:, :seq_len, :]
 
         h = self.layernorm(self.dropout(h))
         for i in range(self.layer):
