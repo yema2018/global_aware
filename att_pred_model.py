@@ -2,13 +2,16 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+
 def create_padding_mask(ori_mask):
     ori_mask = torch.eq(ori_mask, 0).type(torch.int)
     return ori_mask.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1, seq_len)
 
+
 def get_angles(pos, i, d_model):
   angle_rates = 1 / np.power(10000, (2 * (i//2)) / np.float32(d_model))
   return pos * angle_rates
+
 
 def positional_encoding(position, d_model):
     angle_rads = get_angles(np.arange(position)[:, np.newaxis],
@@ -26,6 +29,7 @@ def positional_encoding(position, d_model):
     pos_encoding = pos_encoding[np.newaxis, ...]
 
     return torch.tensor(pos_encoding, dtype=torch.float32)
+
 
 def scaled_dot_product_attention(q, k, v, mask):
     """Calculate the attention weights.
@@ -148,7 +152,7 @@ class PreAttModel(nn.Module):
         self.m = nn.ModuleList([EncoderLayer(d_model, num_heads, dff, rate) for _ in range(layers)])
         self.out_layer = nn.Linear(d_model, 1)
         # self.pos_encoding = positional_encoding(10000, d_model)
-        self.layernorm = nn.LayerNorm(d_model, eps=1e-6)
+        # self.layernorm = nn.LayerNorm(d_model, eps=1e-6)
         self.dropout = nn.Dropout(rate)
         self.pos_enc = nn.Parameter(torch.zeros([1, 1024, d_model]), requires_grad=True)
 
@@ -159,8 +163,7 @@ class PreAttModel(nn.Module):
         mask = create_padding_mask(mask)
 
         h = inp + self.pos_enc[:, :seq_len, :]
-
-        h = self.layernorm(self.dropout(h))
+        h = self.dropout(h)
         for i in range(self.layer):
             h = self.m[i](h, mask)
 

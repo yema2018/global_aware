@@ -30,6 +30,6 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
         target = tgt[begin:stop]
 
         sources = tokenizer(source, return_tensors='pt', max_length=1024, padding=True, truncation=True)
-        targets = tokenizer(target, return_tensors='pt', max_length=200, padding=True, truncation=True)
+        targets = tokenizer(target, return_tensors='pt', max_length=150, padding=True, truncation=True)
 
         yield sources['input_ids'], targets['input_ids'], sources['attention_mask'], targets['attention_mask']

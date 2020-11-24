@@ -12,10 +12,10 @@ def parse_args():
     parser.add_argument('--ckpt', nargs='?', default='', help='checkpoint path')
     parser.add_argument('--dataset', nargs='?', default='', help='cnndm or xsum')
 
-    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
+    parser.add_argument('--batch_size', type=int, default=1, help='batch size')
     parser.add_argument('--epoch', type=int, default=4, help='epoch')
 
-    parser.add_argument('--num_layers', type=int, default=3, help='the number of layers in att_pred_model')
+    parser.add_argument('--num_layers', type=int, default=2, help='the number of layers in att_pred_model')
 
     parser.add_argument('--beam_size', type=int, default=4, help='beam search size.')
     parser.add_argument('--beta', type=float, default=0.8, help='the coefficient of att-aware')
@@ -24,12 +24,18 @@ def parse_args():
                              " <https://arxiv.org/pdf/1909.05858.pdf>`__ for more details.")
     parser.add_argument('--no_repeat_ngram_size', type=int, default=0,
                         help='If set to int > 0, all ngrams of that size can only occur once.')
-    parser.add_argument('--length_penalty', type=float, default=2.0,
-                        help='Exponential penalty to the length. 1.0 means no penalty.')
-    parser.add_argument('--max_length', type=int, default=140,
-                        help='Max_length of generated sequences.')
-    parser.add_argument('--min_length', type=int, default=55,
-                        help='Min_length of generated sequences.')
+    parser.add_argument('--length_penalty', type=float, default=1.0,
+                        help='Exponential penalty to the length. 1.0 means no penalty.'
+                             'cnndm:2'
+                             'xsum:1')
+    parser.add_argument('--max_length', type=int, default=60,
+                        help='Max_length of generated sequences.'
+                             'cnndm:140'
+                             'xsum:55')
+    parser.add_argument('--min_length', type=int, default=10,
+                        help='Min_length of generated sequences.'
+                             'cnndm:60'
+                             'xsum10')
 
     parser.add_argument('--cuda', type=int, default=0,
                         help='the index of cuda used.')
@@ -53,7 +59,7 @@ def inference(summ, tokenizer):
         print('enter attention-aware inference.')
         pre_att_model =PreAttModel(layers=args.num_layers, d_model=1024, num_heads=16, dff=4096, rate=0.1)
 
-        pos_ec = positional_encoding(2000, 1024)
+        # pos_ec = positional_encoding(2000, 1024)
         try:
             pre_att_model.load_state_dict(torch.load(ckpt))
             print('load {}'.format(ckpt))
@@ -78,7 +84,7 @@ def inference(summ, tokenizer):
     #     summ = torch.nn.DataParallel(summ)
 
     summ.to(device)
-    batch_set = gen_bt(1, tokenizer, 'test', dataset=args.dataset)
+    batch_set = gen_bt(1, tokenizer, 'test', dataset=args.dataset)  # the batch_size can not > 1
     start = time.time()
     for (batch, batch_contents) in enumerate(batch_set):
         inp, tar, inp_mask, tar_mask = batch_contents
@@ -89,9 +95,9 @@ def inference(summ, tokenizer):
             tar_mask = tar_mask.to(device)
         with torch.no_grad():
             if args.att_aware:
-                pos = torch.repeat_interleave(pos_ec, int(inp.shape[0]), dim=0).to(device)
+                # pos = torch.repeat_interleave(pos_ec, int(inp.shape[0]), dim=0).to(device)
                 encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
-                opt = pre_att_model(encoder_out, inp_mask, pos)
+                opt = pre_att_model(encoder_out, inp_mask)
                 summary_ids = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             max_length=args.max_length, early_stopping=True, opt_att_dist=opt,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
@@ -101,7 +107,7 @@ def inference(summ, tokenizer):
                 print(out_list)
 
                 for i in out_list:
-                    with open('cnndm/att_beta{}_beam{}_l{}.txt'.format(args.beta, args.beam_size, args.num_layers),
+                    with open('{}/att_beta{}_beam{}_l{}.txt'.format(args.dataset, args.beta, args.beam_size, args.num_layers),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -114,7 +120,8 @@ def inference(summ, tokenizer):
                             summary_ids]
                 print(out_list)
                 for i in out_list:
-                    with open('cnndm/vanilla_beam{}_rp_{}.txt'.format(args.beam_size, args.repetition_penalty),
+                    with open('{}/vanilla_beam{}_rp{}_nr{}.txt'.format(args.dataset, args.beam_size, args.repetition_penalty,
+                                                                          args.no_repeat_ngram_size),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -138,7 +145,7 @@ def inference(summ, tokenizer):
                             summary_ids]
                 print(out_list)
                 for i in out_list:
-                    with open('cnndm/cheat_beta{}_beam{}.txt'.format(args.beta, args.beam_size),
+                    with open('{}/cheat_beta{}_beam{}.txt'.format(args.dataset, args.beta, args.beam_size),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
