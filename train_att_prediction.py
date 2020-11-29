@@ -9,14 +9,14 @@ from transformers import BartTokenizer, BartForConditionalGeneration, get_cosine
 
 
 class TrainPreAtt(object):
-    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, layers, dataset):
+    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, dataset, large, trunc):
         self.epoch = epoch
         self.tokenizer = tokenizer
         self.bs = bs
         self.ckpt = '{}/{}'.format(dataset, ckpt)
         self.dataset = dataset
 
-        self.parallel_loss = ParallelLoss(summ_model, self.ckpt, layers)
+        self.parallel_loss = ParallelLoss(summ_model, self.ckpt, dataset, large, trunc)
         self.pre_att_model = self.parallel_loss.pre_att_model
         self.optimizer = self.parallel_loss.optimizer
 
@@ -59,7 +59,7 @@ class TrainPreAtt(object):
                     cur_loss = np.mean(total_loss)
                     print('| epoch {:3d} | {:5d} batches | '
                           ' ms/batch {:5.2f} | '
-                          'loss {:5.4f} | ppl {:8.4f}'.format(
+                          'loss {:5.8f} | ppl {:8.8f}'.format(
                         epoch, batch,
                         elapsed * 1000 / len(total_loss), cur_loss, np.exp(cur_loss)))
             cur_loss = np.mean(total_loss)
@@ -67,7 +67,7 @@ class TrainPreAtt(object):
             elapsed = time.time() - start_time
             print('| epoch {:3d} | '
                   ' ms/epoch {:5.2f} | '
-                  'loss {:5.4f} | ppl {:8.4f}'.format(
+                  'loss {:5.8f} | ppl {:8.8f}'.format(
                 epoch, elapsed * 1000, cur_loss, np.exp(cur_loss)))
 
             print('\nstart validation')
@@ -115,13 +115,20 @@ def get_angles(pos, i, d_model):
 
 
 class ParallelLoss(nn.Module):
-    def __init__(self, summ_model, ckpt, layers):
+    def __init__(self, summ_model, ckpt, dataset, large, trunc):
         super(ParallelLoss, self).__init__()
         self.loss_mse = torch.nn.MSELoss(reduction='mean')
         self.loss = EucDistanceLoss(1)
         self.summ = summ_model
         self.summ.eval()
-        self.pre_att_model = PreAttModel(layers=layers, d_model=1024, num_heads=16, dff=4096, rate=0.1)
+        self.large = large
+        self.trunc = trunc
+        if large:
+            self.pre_att_model = LargePreAtt(dataset)
+            lr = 2e-5
+        else:
+            self.pre_att_model = PreAttModel(layers=2, d_model=1024, num_heads=16, dff=4096, rate=0.0)
+            lr = 1e-4
 
         try:
             self.pre_att_model.load_state_dict(torch.load(ckpt))
@@ -129,9 +136,9 @@ class ParallelLoss(nn.Module):
         except:
             print('no checkpoints now!')
 
-        self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=1e-4, eps=1e-16, betas=(0.9, 0.999),
+        self.optimizer = AdaBelief(self.pre_att_model.parameters(), lr=lr, eps=1e-16, betas=(0.9, 0.999),
                                    weight_decay=1e-4, weight_decouple=True, rectify=True)
-        # self.optimizer = torch.optim.Adam(self.pre_att_model.parameters(), lr=5e-4)
+        # self.optimizer = torch.optim.SGD(self.pre_att_model.parameters(), lr=1e-5, weight_decay=1e-4, momentum=0.9)
 
     def forward(self, inp, tar, inp_mask, tar_mask, training=True):
 
@@ -146,13 +153,15 @@ class ParallelLoss(nn.Module):
             for _ in decoder_att:
                 opt_att_dist += _[:, :, :, -inp.size()[1]:]
             opt_att_dist *= tar_mask1
-            # print(opt_att_dist[0, :, 1, :])
             opt_att_dist = torch.mean(torch.mean(opt_att_dist, dim=1), dim=1)
+            opt_att_dist = opt_att_dist[:, :self.trunc]
             opt_att_dist /= torch.sum(opt_att_dist, dim=1, keepdim=True)
-            # print(torch.sum(opt_att_dist))
+
             last_encoder_hidden = summ_output[3]
-            # print(inp_mask)
-        pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask)
+        if self.large:
+            pre_att_dist = self.pre_att_model(inp[:, :self.trunc], inp_mask[:, :self.trunc])
+        else:
+            pre_att_dist = self.pre_att_model(last_encoder_hidden[:, :self.trunc, :], inp_mask[:, :self.trunc])
         # print(pre_att_dist[:, :20])
         # print(opt_att_dist[:, :20])
         if training:
@@ -161,6 +170,7 @@ class ParallelLoss(nn.Module):
             #     loss += -torch.log(cos_sim(pre_att_dist[i], opt_att_dist[i]))
             # loss /= last_encoder_hidden.shape[0]
             loss = self.loss(pre_att_dist, opt_att_dist)
+            # loss = -torch.mean(torch.log(torch.sum(torch.min(opt_att_dist, pre_att_dist), dim=-1)))
             # loss = self.loss_mse(pre_att_dist.view(-1), opt_att_dist.view(-1))
         else:
             loss = torch.mean(torch.log(torch.sum(torch.min(opt_att_dist, pre_att_dist), dim=-1)))
@@ -174,8 +184,34 @@ class EucDistanceLoss(nn.Module):
         self.mom = mom
 
     def forward(self, pred, target):
-        return torch.mean(torch.sqrt(torch.sum((pred-target)**2, dim=-1))**self.mom)
+        return torch.mean(torch.sum((pred-target)**2, dim=-1))
 
+
+class LargePreAtt(nn.Module):
+    def __init__(self, dataset):
+        super(LargePreAtt, self).__init__()
+        # if dataset == 'cnndm':
+        #     path = '/root/yema/bart-large-cnn'
+        # elif dataset == 'xsum':
+        #     path = '/root/yema/bart-large-xsum'
+        path = '/root/yema/bart-large'
+        self.bart_ec = BartForConditionalGeneration.from_pretrained(path, use_cache=False).get_encoder()
+        self.out_layer = nn.Linear(1024, 1)
+
+    def forward(self, inp, mask):
+        h = self.bart_ec(inp, mask, return_dict=True).last_hidden_state
+        h = self.out_layer(h)
+        mask = self.create_padding_mask(mask)
+        logits = h.squeeze(-1)
+        # mask = mask.view(batch, -1)
+        logits += mask * -1e19
+        att_ratio = logits.softmax(1)
+
+        return att_ratio
+
+    def create_padding_mask(self, ori_mask):
+        mask = torch.eq(ori_mask, 0).type(torch.int)
+        return mask  # (batch_size, seq_len)
 
 def cos_sim(a, b):
     a = a.view(-1)
@@ -188,8 +224,8 @@ def cos_sim(a, b):
 
 
 if __name__ == '__main__':
-    bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn', use_cache=False)
-    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
-    a = TrainPreAtt(bart, tokenizer, 'layer2_eud_7', 1, 1, 2, 'cnndm')
+    bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-xsum', use_cache=False)
+    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-xsum')
+    a = TrainPreAtt(bart, tokenizer, 'layer2_eud_9_1', 1, 1, 'xsum', False, 1024)
     a.train()
 
