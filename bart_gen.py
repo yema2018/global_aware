@@ -22,18 +22,6 @@ def parse_args():
                              " <https://arxiv.org/pdf/1909.05858.pdf>`__ for more details.")
     parser.add_argument('--no_repeat_ngram_size', type=int, default=0,
                         help='If set to int > 0, all ngrams of that size can only occur once.')
-    parser.add_argument('--length_penalty', type=float, default=1.0,
-                        help='Exponential penalty to the length. 1.0 means no penalty.'
-                             'cnndm:2'
-                             'xsum:1')
-    parser.add_argument('--max_length', type=int, default=60,
-                        help='Max_length of generated sequences.'
-                             'cnndm:140'
-                             'xsum:60')
-    parser.add_argument('--min_length', type=int, default=10,
-                        help='Min_length of generated sequences.'
-                             'cnndm:55'
-                             'xsum10')
 
     parser.add_argument('--cuda', type=int, default=0,
                         help='the index of cuda used.')
@@ -47,6 +35,7 @@ def parse_args():
     parser.add_argument('--vanilla', dest='vanilla', action='store_true', help='enter vanilla beam search.')
     parser.add_argument('--cheat', dest='cheat', action='store_true', help='enter cheating att-aware inference.')
     parser.add_argument('--large', dest='large', action='store_true', help='use BART-encoder as prediction model.')
+    parser.add_argument('--cross', dest='cross', action='store_true', help='enter cross att-aware inference.')
 
     return parser.parse_args()
 
@@ -55,18 +44,14 @@ args = parse_args()
 
 
 def inference(summ, tokenizer):
-    ckpt = '{}/{}'.format(args.dataset, args.ckpt)
+    ckpt = args.ckpt
     device = torch.device('cuda: {}'.format(args.cuda))
     if args.att_aware:
         print('enter attention-aware inference.')
         if args.large:
-            if args.dataset == 'cnndm':
-                path = '/root/yema/bart-large-cnn'
-            elif args.dataset == 'xsum':
-                path = '/root/yema/bart-large-xsum'
-            pre_att_model = BartForConditionalGeneration.from_pretrained(path, use_cache=False).get_encoder()
+            pre_att_model = BartForConditionalGeneration.from_pretrained('/root/yema/bart-large', use_cache=False).get_encoder()
         else:
-            pre_att_model =PreAttModel(layers=2, d_model=1024, num_heads=16, dff=4096, rate=0.1)
+            pre_att_model =PreAttModel(layers=5, d_model=1024, num_heads=16, dff=4096, rate=0.1)
 
         # pos_ec = positional_encoding(2000, 1024)
         try:
@@ -86,6 +71,27 @@ def inference(summ, tokenizer):
 
     if args.cheat:
         print('enter cheating att-aware inference.')
+
+    if args.cross and not args.vanilla:
+        print('enter cross att-aware inference.')
+        if args.large:
+            pre_att_model = BartForConditionalGeneration.from_pretrained('/root/yema/bart-large', use_cache=False).get_encoder()
+        else:
+            pre_att_model =PreAttModel(layers=5, d_model=1024, num_heads=16, dff=4096, rate=0.1)
+
+        # pos_ec = positional_encoding(2000, 1024)
+        try:
+            pre_att_model.load_state_dict(torch.load(ckpt))
+            print('load {}'.format(ckpt))
+        except:
+            print('no checkpoints now!')
+
+        pre_att_model.eval()
+        pre_att_model.to(device)
+        if not args.large:
+            encoder = summ.get_encoder()
+            encoder.eval()
+            encoder.to(device)
     summ.eval()
 
     # if torch.cuda.device_count() > 1:
@@ -112,10 +118,9 @@ def inference(summ, tokenizer):
                     encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
                     opt = pre_att_model(encoder_out[:, :args.trunc, :], inp_mask[:, :args.trunc])
                 summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
-                                            max_length=args.max_length, early_stopping=True, opt_att_dist=opt,
+                                            early_stopping=True, opt_att_dist=opt,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
-                                            no_repeat_ngram_size=args.no_repeat_ngram_size, min_length=args.min_length,
-                                            length_penalty=args.length_penalty)
+                                            no_repeat_ngram_size=args.no_repeat_ngram_size)
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
                 print(out_list)
@@ -125,12 +130,33 @@ def inference(summ, tokenizer):
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
-            if args.vanilla:
+            if args.cross:
+                if args.vanilla:
+                    opt = None
+                    prefix = 'vanilla_new'
+                else:
+                    encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
+                    opt = pre_att_model(encoder_out[:, :args.trunc, :], inp_mask[:, :args.trunc])
+                    prefix = 'cross'
+                summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                                               early_stopping=True, opt_att_dist=opt, min_length=11, length_penalty=1.0,
+                                               beta=args.beta, repetition_penalty=args.repetition_penalty,
+                                               no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=152)
+                out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
+                            summary_ids]
+                print(out_list)
+
+                for i in out_list:
+                    with open(
+                            '{}/{}_beam{}.txt'.format(args.dataset, prefix, args.beam_size),
+                            'a', encoding='utf8') as fw:
+                        fw.write(' .'.join(i.split('.')))
+                        fw.write('\n')
+            if args.vanilla and not args.cross:
                 summary_ids, _ = bart.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
-                                            max_length=args.max_length, early_stopping=True, opt_att_dist=None,
+                                            early_stopping=True, opt_att_dist=None,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
-                                            no_repeat_ngram_size=args.no_repeat_ngram_size, min_length=args.min_length,
-                                            length_penalty=args.length_penalty)
+                                            no_repeat_ngram_size=args.no_repeat_ngram_size)
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
                 print(out_list)
@@ -143,25 +169,23 @@ def inference(summ, tokenizer):
 
             if args.cheat:
                 summ_output = summ(input_ids=inp, attention_mask=inp_mask, decoder_input_ids=tar[:, :-1],
-                                        decoder_attention_mask=tar_mask[:, :-1], output_attentions=True,
-                                        output_hidden_states=True)
+                                   output_attentions=True, output_hidden_states=True, return_dict=True)
 
-                decoder_att = summ_output[2]
+                decoder_att = summ_output.decoder_attentions
                 opt_att_dist = 0
                 for _ in decoder_att:
                     opt_att_dist += _[:, :, :, -inp.size()[1]:]
-                opt_att_dist = torch.mean(torch.mean(opt_att_dist, dim=1), dim=1)
-                opt_att_dist /= torch.sum(opt_att_dist, dim=1, keepdim=True)
+                opt_att_dist = torch.sum(torch.mean(opt_att_dist, dim=1), dim=1)
+                opt_att_dist /= len(decoder_att)
                 summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
-                                            max_length=args.max_length, early_stopping=True, opt_att_dist=opt_att_dist,
+                                            early_stopping=True, opt_att_dist=opt_att_dist,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
-                                            no_repeat_ngram_size=args.no_repeat_ngram_size, min_length=args.min_length,
-                                            length_penalty=args.length_penalty)
+                                            no_repeat_ngram_size=args.no_repeat_ngram_size)
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
                 print(out_list)
                 for i in out_list:
-                    with open('{}/cheat_beta{}_beam{}.txt'.format(args.dataset, args.beta, args.beam_size),
+                    with open('{}/cheat_temp_beta{}_beam{}.txt'.format(args.dataset, args.beta, args.beam_size),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -170,15 +194,22 @@ def inference(summ, tokenizer):
 
 
 if __name__ == '__main__':
+    assert args.dataset in ['cnndm','xsum','wmt']
     if args.dataset == 'cnndm':
         path = '/root/yema/bart-large-cnn'
     elif args.dataset == 'xsum':
         path = '/root/yema/bart-large-xsum'
+    elif args.dataset == 'wmt':
+        path = '/root/yema/mbart-large-en-ro'
     bart = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
-    tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab')
+
+    if args.dataset == 'wmt':
+        tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab-wmt')
+    else:
+        tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab')
 
     if args.train:
-        a = TrainPreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.dataset, args.large, args.trunc)
+        a = TrainPreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.dataset, args.large)
         a.train()
     else:
         inference(bart, tokenizer)

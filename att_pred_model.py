@@ -157,20 +157,15 @@ class PreAttModel(nn.Module):
         self.pos_enc = nn.Parameter(torch.zeros([1, 1024, d_model]), requires_grad=True)
 
     def forward(self, inp, mask):
-
-        batch = inp.size()[0]
         seq_len = inp.size()[1]
-        mask = create_padding_mask(mask)
+        h_mask = create_padding_mask(mask)
 
         h = inp + self.pos_enc[:, :seq_len, :]
-        h = self.dropout(h)
+        # h = self.dropout(h)
         for i in range(self.layer):
-            h = self.m[i](h, mask)
+            h = self.m[i](h, h_mask)
 
         h = self.out_layer(h)
-        logits = h.view(batch, -1)
-        mask = mask.view(batch, -1)
-        logits += mask * -1e19
-        att_ratio = logits.softmax(1)
+        logits = h.squeeze(-1) * mask
 
-        return att_ratio   # shape == (batch_size, seq_len)
+        return logits  # shape == (batch_size, seq_len)

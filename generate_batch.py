@@ -1,5 +1,6 @@
 import json
 import numpy as np
+import torch
 
 
 def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
@@ -23,13 +24,30 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
 
     length = len(data)
     num_batch = int(np.ceil(length / bs))
-    for i in range(num_batch):
-        begin = i * bs
-        stop = min((i+1)*bs, length)
-        source = src[begin:stop]
-        target = tgt[begin:stop]
 
-        sources = tokenizer(source, return_tensors='pt', max_length=1024, padding=True, truncation=True)
-        targets = tokenizer(target, return_tensors='pt', max_length=150, padding=True, truncation=True)
+    if dataset == 'wmt':
+        for i in range(num_batch):
+            begin = i * bs
+            stop = min((i + 1) * bs, length)
+            source = src[begin:stop]
+            target = tgt[begin:stop]
 
-        yield sources['input_ids'], targets['input_ids'], sources['attention_mask'], targets['attention_mask']
+            batch = tokenizer.prepare_seq2seq_batch(source, src_lang="en_XX", tgt_lang="ro_RO",
+                                                    tgt_texts=target, max_length=128, max_target_length=128,
+                                                    truncation=True, padding=True)
+            input_ids = batch["input_ids"]
+            target_ids = batch["labels"]
+            inp_mask = batch['attention_mask']
+            tar_mask = 1 - torch.eq(target_ids, 1).type(torch.int)
+            yield input_ids, target_ids, inp_mask, tar_mask
+    else:
+        for i in range(num_batch):
+            begin = i * bs
+            stop = min((i+1)*bs, length)
+            source = src[begin:stop]
+            target = tgt[begin:stop]
+
+            sources = tokenizer(source, return_tensors='pt', max_length=1024, padding=True, truncation=True)
+            targets = tokenizer(target, return_tensors='pt', max_length=150, padding=True, truncation=True)
+
+            yield sources['input_ids'], targets['input_ids'], sources['attention_mask'], targets['attention_mask']
