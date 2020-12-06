@@ -9,14 +9,14 @@ from transformers import BartTokenizer, BartForConditionalGeneration, get_cosine
 
 
 class TrainPreAtt(object):
-    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, dataset, large):
+    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, dataset):
         self.epoch = epoch
         self.tokenizer = tokenizer
         self.bs = bs
-        self.ckpt = '{}/{}'.format(dataset, ckpt)
+        self.ckpt = ckpt
         self.dataset = dataset
 
-        self.parallel_loss = ParallelLoss(summ_model, self.ckpt, large)
+        self.parallel_loss = ParallelLoss(summ_model, self.ckpt)
         self.pre_att_model = self.parallel_loss.pre_att_model
         self.optimizer = self.parallel_loss.optimizer
 
@@ -85,7 +85,7 @@ class TrainPreAtt(object):
                     loss = self.parallel_loss(inp, tar, inp_mask, tar_mask, False).mean()
                     val_loss.append(loss.item())
 
-            print('Attention-aware Score {:.8f}'.format(np.mean(val_loss)))
+            print('Validation Loss {:.8f}'.format(np.mean(val_loss)))
             with open('records for {}.txt'.format(self.ckpt.replace('/', '_')), 'a') as fw:
                 fw.write('epoch{}: {}'.format(epoch, np.mean(val_loss)))
                 fw.write('\n')
@@ -115,19 +115,15 @@ def get_angles(pos, i, d_model):
 
 
 class ParallelLoss(nn.Module):
-    def __init__(self, summ_model, ckpt, large):
+    def __init__(self, summ_model, ckpt):
         super(ParallelLoss, self).__init__()
         self.loss_mse = torch.nn.MSELoss(reduction='mean')
         self.loss = EucDistanceLoss(1)
         self.summ = summ_model
         self.summ.eval()
-        self.large = large
-        if large:
-            self.pre_att_model = LargePreAtt()
-            lr = 2e-5
-        else:
-            self.pre_att_model = PreAttModel(layers=5, d_model=1024, num_heads=16, dff=4096, rate=0.1)
-            lr = 5e-6
+
+        self.pre_att_model = PreAttModel(layers=5, d_model=1024, num_heads=16, dff=4096, rate=0.1)
+        lr = 1e-5
 
         try:
             self.pre_att_model.load_state_dict(torch.load(ckpt))
@@ -156,13 +152,10 @@ class ParallelLoss(nn.Module):
             opt_att_dist /= len(decoder_att)
 
             last_encoder_hidden = summ_output.encoder_last_hidden_state
-        if self.large:
-            pre_att_dist = self.pre_att_model(inp, inp_mask)
-        else:
-            pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask)
+
+        pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask)
         print(pre_att_dist.sum())
         print(opt_att_dist.sum())
-        print('\n')
         if training:
             # loss = 0
             # for i in range(int(last_encoder_hidden.shape[0])):
@@ -220,8 +213,9 @@ def cos_sim(a, b):
 
 
 if __name__ == '__main__':
-    bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-xsum', use_cache=False)
-    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-xsum')
-    a = TrainPreAtt(bart, tokenizer, 'layer5_2', 1, 1, 'xsum', False)
+    from transformers import MBartForConditionalGeneration, MBartTokenizer
+    model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-en-ro", use_cache=False)
+    tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-en-ro")
+    a = TrainPreAtt(model, tokenizer, 'wmt/layer5@', 1, 1, 'wmt')
     a.train()
 

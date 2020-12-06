@@ -33,8 +33,8 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
             target = tgt[begin:stop]
 
             batch = tokenizer.prepare_seq2seq_batch(source, src_lang="en_XX", tgt_lang="ro_RO",
-                                                    tgt_texts=target, max_length=128, max_target_length=128,
-                                                    truncation=True, padding=True)
+                                                    tgt_texts=target, max_length=64, max_target_length=64, padding=True,
+                                                    truncation=True)
             input_ids = batch["input_ids"]
             target_ids = batch["labels"]
             inp_mask = batch['attention_mask']
@@ -51,3 +51,11 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
             targets = tokenizer(target, return_tensors='pt', max_length=150, padding=True, truncation=True)
 
             yield sources['input_ids'], targets['input_ids'], sources['attention_mask'], targets['attention_mask']
+
+
+if __name__ == '__main__':
+    from transformers import MBartForConditionalGeneration, MBartTokenizer
+
+    model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-en-ro", use_cache=False)
+    tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-en-ro")
+    gen_bt(4, tokenizer, 'val', dataset='wmt', shuffle=False)
