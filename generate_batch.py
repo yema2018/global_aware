@@ -13,6 +13,8 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
             text = i['src']
             if text[:5] == '(CNN)':
                 text = text[5:]
+                if text[:4] == ' -- ':
+                    text = text[4:]
             src.append(text)
     else:
         src = [i['src'] for i in data]
@@ -33,12 +35,14 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
             target = tgt[begin:stop]
 
             batch = tokenizer.prepare_seq2seq_batch(source, src_lang="en_XX", tgt_lang="ro_RO",
-                                                    tgt_texts=target, max_length=64, max_target_length=64, padding=True,
+                                                    tgt_texts=target, max_length=256, max_target_length=256, padding=True,
                                                     truncation=True)
             input_ids = batch["input_ids"]
             target_ids = batch["labels"]
             inp_mask = batch['attention_mask']
             tar_mask = 1 - torch.eq(target_ids, 1).type(torch.int)
+            prefix = torch.tensor([250020]).unsqueeze(0).repeat_interleave(target_ids.shape[0], 0)
+            target_ids = torch.cat((prefix, target_ids), 1)[:, :-1]
             yield input_ids, target_ids, inp_mask, tar_mask
     else:
         for i in range(num_batch):
@@ -48,7 +52,7 @@ def gen_bt(bs, tokenizer, mode, dataset='cnndm', shuffle=False):
             target = tgt[begin:stop]
 
             sources = tokenizer(source, return_tensors='pt', max_length=1024, padding=True, truncation=True)
-            targets = tokenizer(target, return_tensors='pt', max_length=150, padding=True, truncation=True)
+            targets = tokenizer(target, return_tensors='pt', max_length=152, padding=True, truncation=True)
 
             yield sources['input_ids'], targets['input_ids'], sources['attention_mask'], targets['attention_mask']
 

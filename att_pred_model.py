@@ -158,14 +158,17 @@ class PreAttModel(nn.Module):
 
     def forward(self, inp, mask):
         seq_len = inp.size()[1]
-        h_mask = create_padding_mask(mask)
+        mask = create_padding_mask(mask)
 
         h = inp + self.pos_enc[:, :seq_len, :]
-        # h = self.dropout(h)
+        h = self.dropout(h)
         for i in range(self.layer):
-            h = self.m[i](h, h_mask)
+            h = self.m[i](h, mask)
 
+        mask = mask.squeeze(1).squeeze(1)
         h = self.out_layer(h)
-        logits = h.squeeze(-1) * mask
+        logits = h.squeeze(-1)
+        logits += mask * -1e19
+        logits = torch.exp(logits)
 
         return logits  # shape == (batch_size, seq_len)

@@ -5,7 +5,7 @@ import torch.nn as nn
 import time
 from generate_batch import gen_bt
 import numpy as np
-from transformers import BartTokenizer, BartForConditionalGeneration, get_cosine_schedule_with_warmup
+from transformers import BartTokenizer, BartForConditionalGeneration, MBartForConditionalGeneration, MBartTokenizer
 
 
 class TrainPreAtt(object):
@@ -19,6 +19,7 @@ class TrainPreAtt(object):
         self.parallel_loss = ParallelLoss(summ_model, self.ckpt)
         self.pre_att_model = self.parallel_loss.pre_att_model
         self.optimizer = self.parallel_loss.optimizer
+        # self.sch = torch.optim.lr_scheduler.StepLR(self.optimizer, 5000, gamma=0.9, last_epoch=-1)
 
         if torch.cuda.device_count() > 1:
             print("Let's use", torch.cuda.device_count(), "GPUs!")
@@ -34,41 +35,42 @@ class TrainPreAtt(object):
 
     def train(self):
         for epoch in range(self.epoch):
-            # total_loss = []
-            # start_time = time.time()
-            # self.pre_att_model.train()
-            # print('start training')
-            # batch_set = gen_bt(self.bs, self.tokenizer, 'train', shuffle=True, dataset=self.dataset)
-            # for (batch, batch_contents) in enumerate(batch_set):
-            #     inp, tar, inp_mask, tar_mask = batch_contents
-            #     inp = inp.to(self.device)
-            #     tar = tar.to(self.device)
-            #     inp_mask = inp_mask.to(self.device)
-            #     tar_mask = tar_mask.to(self.device)
-            #     # pos = torch.repeat_interleave(self.pos, int(inp.shape[0]), dim=0)
-            #
-            #     self.optimizer.zero_grad()
-            #
-            #     loss = self.parallel_loss(inp, tar, inp_mask, tar_mask).mean()
-            #     loss.backward()
-            #     self.optimizer.step()
-            #
-            #     total_loss.append(loss.item())
-            #     if batch % 50 == 0 and batch > 0:
-            #         elapsed = time.time() - start_time
-            #         cur_loss = np.mean(total_loss)
-            #         print('| epoch {:3d} | {:5d} batches | '
-            #               ' ms/batch {:5.2f} | '
-            #               'loss {:5.8f} | ppl {:8.8f}'.format(
-            #             epoch, batch,
-            #             elapsed * 1000 / len(total_loss), cur_loss, np.exp(cur_loss)))
-            # cur_loss = np.mean(total_loss)
-            # torch.save(self.pre_att_model.state_dict(), '{}_{}'.format(self.ckpt, epoch))
-            # elapsed = time.time() - start_time
-            # print('| epoch {:3d} | '
-            #       ' ms/epoch {:5.2f} | '
-            #       'loss {:5.8f} | ppl {:8.8f}'.format(
-            #     epoch, elapsed * 1000, cur_loss, np.exp(cur_loss)))
+            total_loss = []
+            start_time = time.time()
+            self.pre_att_model.train()
+            print('start training')
+            batch_set = gen_bt(self.bs, self.tokenizer, 'train', shuffle=True, dataset=self.dataset)
+            for (batch, batch_contents) in enumerate(batch_set):
+                inp, tar, inp_mask, tar_mask = batch_contents
+                inp = inp.to(self.device)
+                tar = tar.to(self.device)
+                inp_mask = inp_mask.to(self.device)
+                tar_mask = tar_mask.to(self.device)
+                # pos = torch.repeat_interleave(self.pos, int(inp.shape[0]), dim=0)
+
+                self.optimizer.zero_grad()
+
+                loss = self.parallel_loss(inp, tar, inp_mask, tar_mask).mean()
+                loss.backward()
+                self.optimizer.step()
+                # self.sch.step()
+
+                total_loss.append(loss.item())
+                if batch % 50 == 0 and batch > 0:
+                    elapsed = time.time() - start_time
+                    cur_loss = np.mean(total_loss)
+                    print('| epoch {:3d} | {:5d} batches | '
+                          ' ms/batch {:5.2f} | '
+                          'loss {:5.8f} | ppl {:8.8f}'.format(
+                        epoch, batch,
+                        elapsed * 1000 / len(total_loss), cur_loss, np.exp(cur_loss)))
+            cur_loss = np.mean(total_loss)
+            torch.save(self.pre_att_model.state_dict(), '{}_{}'.format(self.ckpt, epoch))
+            elapsed = time.time() - start_time
+            print('| epoch {:3d} | '
+                  ' ms/epoch {:5.2f} | '
+                  'loss {:5.8f} | ppl {:8.8f}'.format(
+                epoch, elapsed * 1000, cur_loss, np.exp(cur_loss)))
 
             print('\nstart validation')
             val_loss = []
@@ -86,8 +88,8 @@ class TrainPreAtt(object):
                     val_loss.append(loss.item())
 
             print('Validation Loss {:.8f}'.format(np.mean(val_loss)))
-            with open('records for {}.txt'.format(self.ckpt.replace('/', '_')), 'a') as fw:
-                fw.write('epoch{}: {}'.format(epoch, np.mean(val_loss)))
+            with open('validation for {}.txt'.format(self.dataset), 'a') as fw:
+                fw.write('{}_{}: {}'.format(self.ckpt, epoch, np.mean(val_loss)))
                 fw.write('\n')
 
 
@@ -122,8 +124,8 @@ class ParallelLoss(nn.Module):
         self.summ = summ_model
         self.summ.eval()
 
-        self.pre_att_model = PreAttModel(layers=5, d_model=1024, num_heads=16, dff=4096, rate=0.1)
-        lr = 1e-5
+        self.pre_att_model = PreAttModel(layers=2, d_model=1024, num_heads=16, dff=4096, rate=0.0)
+        lr = 2e-5
 
         try:
             self.pre_att_model.load_state_dict(torch.load(ckpt))
@@ -154,8 +156,8 @@ class ParallelLoss(nn.Module):
             last_encoder_hidden = summ_output.encoder_last_hidden_state
 
         pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask)
-        print(pre_att_dist.sum())
-        print(opt_att_dist.sum())
+        # print(pre_att_dist[:,:])
+        # print(opt_att_dist[:,:])
         if training:
             # loss = 0
             # for i in range(int(last_encoder_hidden.shape[0])):
@@ -166,6 +168,7 @@ class ParallelLoss(nn.Module):
             # loss = self.loss_mse(pre_att_dist.view(-1), opt_att_dist.view(-1))
         else:
             # loss = torch.mean(torch.log(torch.sum(torch.min(opt_att_dist, pre_att_dist), dim=-1)))
+            # loss = torch.abs(pre_att_dist - opt_att_dist)/(opt_att_dist+1e-9).mean()
             loss = self.loss(pre_att_dist, opt_att_dist)
 
         return loss
@@ -213,9 +216,9 @@ def cos_sim(a, b):
 
 
 if __name__ == '__main__':
-    from transformers import MBartForConditionalGeneration, MBartTokenizer
-    model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-en-ro", use_cache=False)
-    tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-en-ro")
-    a = TrainPreAtt(model, tokenizer, 'wmt/layer5@', 1, 1, 'wmt')
-    a.train()
+    bart = BartForConditionalGeneration.from_pretrained('/root/yema/bart-large-cnn', use_cache=False)
+    tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab')
+    for i in range(0, 2):
+        a = TrainPreAtt(bart, tokenizer, 'newsroom/layer2_100k_{}'.format(i), 1, 1, 'newsroom')
+        a.train()
 
