@@ -75,7 +75,7 @@ class TrainPreAtt(object):
             print('\nstart validation')
             val_loss = []
             self.pre_att_model.eval()
-            val_batch = gen_bt(self.bs, self.tokenizer, mode='test', dataset=self.dataset)
+            val_batch = gen_bt(self.bs, self.tokenizer, mode='val', dataset=self.dataset)
             for (b, bc) in enumerate(val_batch):
                 inp, tar, inp_mask, tar_mask = bc
                 inp = inp.to(self.device)
@@ -205,6 +205,7 @@ class LargePreAtt(nn.Module):
         mask = torch.eq(ori_mask, 0).type(torch.int)
         return mask  # (batch_size, seq_len)
 
+
 def cos_sim(a, b):
     a = a.view(-1)
     b = b.view(-1)
@@ -216,8 +217,8 @@ def cos_sim(a, b):
 
 
 if __name__ == '__main__':
-    bart = BartForConditionalGeneration.from_pretrained('/root/yema/bart-large-cnn', use_cache=False)
-    tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab')
+    bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn', use_cache=False)
+    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
     for i in range(0, 2):
         a = TrainPreAtt(bart, tokenizer, 'newsroom/layer2_100k_{}'.format(i), 1, 1, 'newsroom')
         a.train()

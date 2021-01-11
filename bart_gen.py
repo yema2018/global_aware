@@ -1,11 +1,10 @@
-from train_att_prediction import TrainPreAtt, positional_encoding
+from train_att_prediction import TrainPreAtt
 from transformers import BartForConditionalGeneration, BartTokenizer, MBartForConditionalGeneration, MBartTokenizer
 from generate_batch import gen_bt
 import torch
 import argparse
 from att_pred_model import PreAttModel
 import time
-import numpy as np
 
 
 def parse_args():
@@ -36,7 +35,8 @@ def parse_args():
                         help='enter attention-aware inference.')
     parser.add_argument('--vanilla', dest='vanilla', action='store_true', help='enter vanilla beam search.')
     parser.add_argument('--cheat', dest='cheat', action='store_true', help='enter cheating att-aware inference.')
-    parser.add_argument('--cross', dest='cross', action='store_true', help='enter cross att-aware inference.')
+    parser.add_argument('--vanilla_no', dest='vanilla_no', action='store_true', help='enter vanilla beam search without'
+                                                                                     'length limits.')
 
     return parser.parse_args()
 
@@ -70,29 +70,10 @@ def inference(summ, tokenizer):
     if args.cheat:
         print('enter cheating att-aware inference.')
 
-    if args.cross and not args.vanilla:
-        print('enter cross att-aware inference.')
-        pre_att_model =PreAttModel(layers=2, d_model=1024, num_heads=16, dff=4096, rate=0.0)
+    if args.vanilla_no:
+        print('enter vanilla beam search without length limits.')
 
-        # pos_ec = positional_encoding(2000, 1024)
-        try:
-            pre_att_model.load_state_dict(torch.load(ckpt))
-            print('load {}'.format(ckpt))
-        except:
-            print('no checkpoints now!')
-
-        pre_att_model.eval()
-        pre_att_model.to(device)
-
-        encoder = summ.get_encoder()
-        encoder.eval()
-        encoder.to(device)
     summ.eval()
-
-    # if torch.cuda.device_count() > 1:
-    #     print("Let's use", torch.cuda.device_count(), "GPUs!")
-    #     # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
-    #     summ = torch.nn.DataParallel(summ)
 
     summ.to(device)
     batch_set = gen_bt(1, tokenizer, 'test', dataset=args.dataset)  # the batch_size can not > 1
@@ -126,18 +107,11 @@ def inference(summ, tokenizer):
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
-            if args.cross:
-                if args.vanilla:
-                    opt = None
-                    prefix = 'vanilla_new'
-                else:
-                    encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
-                    opt = pre_att_model(encoder_out[:, :args.trunc, :], inp_mask[:, :args.trunc])
-                    prefix = 'cross'
+            if args.vanilla_no:
                 summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
-                                               early_stopping=True, opt_att_dist=opt, min_length=1, length_penalty=1.0,
-                                               beta=args.beta, repetition_penalty=args.repetition_penalty,
-                                               no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=ml, gamma=args.gamma)
+                                               early_stopping=True, opt_att_dist=None, min_length=1, length_penalty=1.0,
+                                               repetition_penalty=args.repetition_penalty,
+                                               no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=ml)
 
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
@@ -145,11 +119,11 @@ def inference(summ, tokenizer):
 
                 for i in out_list:
                     with open(
-                            '{}/{}_beam{}.txt'.format(args.dataset, prefix, args.beam_size),
+                            '{}/vanilla_no_beam{}.txt'.format(args.dataset, args.beam_size),
                             'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
-            if args.vanilla and not args.cross:
+            if args.vanilla:
                 summary_ids, _ = bart.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             early_stopping=True, opt_att_dist=None,
                                             repetition_penalty=args.repetition_penalty,
@@ -159,8 +133,7 @@ def inference(summ, tokenizer):
                 print(out_list)
 
                 for i in out_list:
-                    with open('{}/vanilla_beam{}_rp{}_nr{}.txt'.format(args.dataset, args.beam_size, args.repetition_penalty,
-                                                                          args.no_repeat_ngram_size),
+                    with open('{}/vanilla_beam{}_rp{}.txt'.format(args.dataset, args.beam_size, args.repetition_penalty),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -184,7 +157,7 @@ def inference(summ, tokenizer):
                             summary_ids]
                 print(out_list)
                 for i in out_list:
-                    with open('{}/cheat2_beta{}_beam{}_ga{}.txt'.format(args.dataset, args.beta, args.beam_size, args.gamma),
+                    with open('{}/cheat_beta{}_beam{}_ga{}.txt'.format(args.dataset, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -193,22 +166,23 @@ def inference(summ, tokenizer):
 
 
 if __name__ == '__main__':
-    assert args.dataset in ['cnndm','xsum','wmt','reddit','newsroom']
+    assert args.dataset in ['cnndm','xsum','wmt','newsroom']
     if args.dataset == 'cnndm' or args.dataset == 'newsroom':
         path = 'facebook/bart-large-cnn'
         bart = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
         tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
-    if args.dataset == 'xsum' or args.dataset == 'reddit':
-        path = '/root/yema/bart-large-xsum'
+    if args.dataset == 'xsum':
+        path = 'facebook/bart-large-xsum'
         bart = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
-        tokenizer = BartTokenizer.from_pretrained('/root/yema/bart-large-vocab')
+        tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-xsum')
     if args.dataset == 'wmt':
-        path = '/root/yema/mbart-large-en-ro'
+        path = 'facebook/mbart-large-en-ro'
         bart = MBartForConditionalGeneration.from_pretrained(path, use_cache=False)
-        tokenizer = MBartTokenizer.from_pretrained('/root/yema/mbart-large-vocab')
+        tokenizer = MBartTokenizer.from_pretrained('facebook/mbart-large-en-ro')
 
     if args.train:
         a = TrainPreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.dataset)
         a.train()
     else:
         inference(bart, tokenizer)
+
