@@ -3,7 +3,7 @@ Attention-aware inference: generate texts according to attention distribution.
 
 ## Download the modified transformers package
 As mentioned in the paper, the code of attention-aware inference is based on the generation part of [HuggingFace transformers](https://github.com/huggingface/transformers/blob/v3.3.1/src/transformers/generation_utils.py), 
-you can download our modified transformers from [here](https://drive.google.com/file/d/19dYBwwcXTTRmWwBBeWbGZtcQ5jHTG_g1/view?usp=sharing), then install the package by pip, i.e.,
+you can download our modified transformers from [here](https://drive.google.com/file/d/1cAA7GSmmEEC7jT1TpxjQrgY5zOR1m1h1/view?usp=sharing), then install the package by pip, i.e.,
 ```
 pip install -e PATH/TO/transformers-att-aware
 ```    
