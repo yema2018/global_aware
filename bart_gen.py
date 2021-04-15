@@ -1,5 +1,5 @@
 from train_att_prediction import TrainPreAtt
-from transformers import BartForConditionalGeneration, BartTokenizer, MBartForConditionalGeneration, MBartTokenizer
+from transformers import BartForConditionalGeneration, BartTokenizer, PegasusForConditionalGeneration, PegasusTokenizer
 from generate_batch import gen_bt
 import torch
 import argparse
@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument('--cheat', dest='cheat', action='store_true', help='enter cheating att-aware inference.')
     parser.add_argument('--vanilla_no', dest='vanilla_no', action='store_true', help='enter vanilla beam search without'
                                                                                      'length limits.')
+    parser.add_argument('--peg', dest='peg', action='store_true', help='use pegasus')
 
     return parser.parse_args()
 
@@ -44,9 +45,16 @@ def parse_args():
 args = parse_args()
 
 
-def inference(summ, tokenizer):
+def inference(summ, tokenizer, summ_use):
     ckpt = args.ckpt
+    model_fix = 'bart'
+    ml = 1024
+    if args.peg:
+        model_fix = 'peg'
+        if args.dataset in ['xsum', 'newsroom']:
+            ml = 512
     device = torch.device('cuda: {}'.format(args.cuda))
+
     if args.att_aware:
         print('enter attention-aware inference.')
         pre_att_model =PreAttModel(layers=2, d_model=1024, num_heads=16, dff=4096, rate=0.0)
@@ -76,12 +84,15 @@ def inference(summ, tokenizer):
     summ.eval()
 
     summ.to(device)
-    batch_set = gen_bt(1, tokenizer, 'test', dataset=args.dataset)  # the batch_size can not > 1
+    batch_set = gen_bt(1, tokenizer, 'test', dataset=args.dataset, ml=ml, peg=args.peg)  # the batch_size can not > 1
     start = time.time()
-    if args.dataset == 'wmt':
-        ml = 1024
+
+    if summ_use is None:
+        summ_g = summ
     else:
-        ml = 152
+        summ_use.to(device)
+        summ_g = summ_use
+
     for (batch, batch_contents) in enumerate(batch_set):
         inp, tar, inp_mask, tar_mask = batch_contents
         inp = inp.to(device)
@@ -94,24 +105,25 @@ def inference(summ, tokenizer):
                 encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
                 opt = pre_att_model(encoder_out[:, :args.trunc, :], inp_mask[:, :args.trunc])
 
-                summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             early_stopping=True, opt_att_dist=opt, min_length=1, length_penalty=1.0,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
-                                            no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=ml, gamma=args.gamma)
+                                            no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=256, gamma=args.gamma)
+
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
                 print(out_list)
 
                 for i in out_list:
-                    with open('{}/att_beta{}_beam{}_ga{}.txt'.format(args.dataset, args.beta, args.beam_size, args.gamma),
+                    with open('{}/att_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset,model_fix, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
             if args.vanilla_no:
-                summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                                early_stopping=True, opt_att_dist=None, min_length=1, length_penalty=1.0,
                                                repetition_penalty=args.repetition_penalty,
-                                               no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=ml)
+                                               no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=256)
 
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
@@ -124,7 +136,7 @@ def inference(summ, tokenizer):
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
             if args.vanilla:
-                summary_ids, _ = bart.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             early_stopping=True, opt_att_dist=None,
                                             repetition_penalty=args.repetition_penalty,
                                             no_repeat_ngram_size=args.no_repeat_ngram_size)
@@ -133,7 +145,7 @@ def inference(summ, tokenizer):
                 print(out_list)
 
                 for i in out_list:
-                    with open('{}/vanilla_beam{}_rp{}.txt'.format(args.dataset, args.beam_size, args.repetition_penalty),
+                    with open('{}/vanilla_{}_beam{}.txt'.format(args.dataset, model_fix, args.beam_size),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -149,15 +161,16 @@ def inference(summ, tokenizer):
                 opt_att_dist = torch.sum(torch.mean(opt_att_dist, dim=1), dim=1)
                 opt_att_dist /= len(decoder_att)
 
-                summary_ids, _ = summ.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
-                                            early_stopping=True, opt_att_dist=opt_att_dist,min_length=1,length_penalty=1.0,
+                summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
+                                            early_stopping=True, opt_att_dist=opt_att_dist, min_length=1, length_penalty=1.0,
                                             beta=args.beta, repetition_penalty=args.repetition_penalty,
-                                            no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=ml, gamma=args.gamma)
+                                            no_repeat_ngram_size=args.no_repeat_ngram_size, max_length=256, gamma=args.gamma)
+
                 out_list = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
                             summary_ids]
                 print(out_list)
                 for i in out_list:
-                    with open('{}/cheat_beta{}_beam{}_ga{}.txt'.format(args.dataset, args.beta, args.beam_size, args.gamma),
+                    with open('{}/cheat_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset, model_fix, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')))
                         fw.write('\n')
@@ -166,23 +179,64 @@ def inference(summ, tokenizer):
 
 
 if __name__ == '__main__':
-    assert args.dataset in ['cnndm','xsum','wmt','newsroom']
-    if args.dataset == 'cnndm' or args.dataset == 'newsroom':
-        path = 'facebook/bart-large-cnn'
-        bart = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
-        tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
+    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','big-patent']
+    summ_use = None
+    if args.dataset == 'cnndm':
+        if not args.peg:
+            path = 'facebook/bart-large-cnn'
+            summ = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
+            tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
     if args.dataset == 'xsum':
-        path = 'facebook/bart-large-xsum'
-        bart = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
-        tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-xsum')
-    if args.dataset == 'wmt':
-        path = 'facebook/mbart-large-en-ro'
-        bart = MBartForConditionalGeneration.from_pretrained(path, use_cache=False)
-        tokenizer = MBartTokenizer.from_pretrained('facebook/mbart-large-en-ro')
+        if not args.peg:
+            path = 'facebook/bart-large-xsum'
+            summ = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
+            summ_use = BartForConditionalGeneration.from_pretrained(path)
+            tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-xsum')
+        else:
+            path = 'google/pegasus-xsum'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-xsum')
+    if args.dataset == 'newsroom':
+        if not args.peg:
+            path = 'facebook/bart-large-cnn'
+            summ = BartForConditionalGeneration.from_pretrained(path, use_cache=False)
+            tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
+        else:
+            path = 'google/pegasus-newsroom'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-newsroom')
+    if args.dataset == 'multi-news':
+        if args.peg:
+            path = 'google/pegasus-multi_news'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-multi-news')
+    if args.dataset == 'billsum':
+        if args.peg:
+            path = 'google/pegasus-billsum'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-billsum')
+    if args.dataset == 'big-patent':
+        if args.peg:
+            path = 'google/pegasus-big_patent'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-big_patent')
+
 
     if args.train:
-        a = TrainPreAtt(bart, tokenizer, args.ckpt, args.epoch, args.batch_size, args.dataset)
+        a = TrainPreAtt(summ, tokenizer, args.ckpt, args.epoch, args.batch_size, args.dataset, args.peg)
         a.train()
     else:
-        inference(bart, tokenizer)
+        inference(summ, tokenizer, summ_use)
+
+
 

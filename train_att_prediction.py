@@ -5,16 +5,21 @@ import torch.nn as nn
 import time
 from generate_batch import gen_bt
 import numpy as np
-from transformers import BartTokenizer, BartForConditionalGeneration, MBartForConditionalGeneration, MBartTokenizer
+from transformers import BartTokenizer, BartForConditionalGeneration
 
 
 class TrainPreAtt(object):
-    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, dataset):
+    def __init__(self, summ_model, tokenizer, ckpt, epoch, bs, dataset, use_peg):
         self.epoch = epoch
         self.tokenizer = tokenizer
         self.bs = bs
         self.ckpt = ckpt
         self.dataset = dataset
+        self.peg = use_peg
+        if use_peg and dataset in ['xsum','newsroom']:
+            self.ml = 512
+        else:
+            self.ml = 1024
 
         self.parallel_loss = ParallelLoss(summ_model, self.ckpt)
         self.pre_att_model = self.parallel_loss.pre_att_model
@@ -39,7 +44,7 @@ class TrainPreAtt(object):
             start_time = time.time()
             self.pre_att_model.train()
             print('start training')
-            batch_set = gen_bt(self.bs, self.tokenizer, 'train', shuffle=True, dataset=self.dataset)
+            batch_set = gen_bt(self.bs, self.tokenizer, 'train', shuffle=True, dataset=self.dataset, ml=self.ml, peg=self.peg)
             for (batch, batch_contents) in enumerate(batch_set):
                 inp, tar, inp_mask, tar_mask = batch_contents
                 inp = inp.to(self.device)
@@ -75,7 +80,7 @@ class TrainPreAtt(object):
             print('\nstart validation')
             val_loss = []
             self.pre_att_model.eval()
-            val_batch = gen_bt(self.bs, self.tokenizer, mode='val', dataset=self.dataset)
+            val_batch = gen_bt(self.bs, self.tokenizer, mode='val', dataset=self.dataset, shuffle=True, ml=self.ml, peg=self.peg)
             for (b, bc) in enumerate(val_batch):
                 inp, tar, inp_mask, tar_mask = bc
                 inp = inp.to(self.device)
@@ -91,29 +96,6 @@ class TrainPreAtt(object):
             with open('validation for {}.txt'.format(self.dataset), 'a') as fw:
                 fw.write('{}_{}: {}'.format(self.ckpt, epoch, np.mean(val_loss)))
                 fw.write('\n')
-
-
-def positional_encoding(position, d_model):
-    angle_rads = get_angles(np.arange(position)[:, np.newaxis],
-                            np.arange(d_model)[np.newaxis, :],
-                            d_model)
-
-    # apply sin to even indices in the array; 2i
-    sines = np.sin(angle_rads[:, 0::2])
-
-    # apply cos to odd indices in the array; 2i+1
-    cosines = np.cos(angle_rads[:, 1::2])
-
-    pos_encoding = np.concatenate([sines, cosines], axis=-1)
-
-    pos_encoding = pos_encoding[np.newaxis, ...]
-
-    return torch.tensor(pos_encoding, dtype=torch.float32)
-
-
-def get_angles(pos, i, d_model):
-  angle_rates = 1 / np.power(10000, (2 * (i//2)) / np.float32(d_model))
-  return pos * angle_rates
 
 
 class ParallelLoss(nn.Module):
@@ -156,20 +138,10 @@ class ParallelLoss(nn.Module):
             last_encoder_hidden = summ_output.encoder_last_hidden_state
 
         pre_att_dist = self.pre_att_model(last_encoder_hidden, inp_mask)
-        # print(pre_att_dist[:,:])
-        # print(opt_att_dist[:,:])
-        if training:
-            # loss = 0
-            # for i in range(int(last_encoder_hidden.shape[0])):
-            #     loss += -torch.log(cos_sim(pre_att_dist[i], opt_att_dist[i]))
-            # loss /= last_encoder_hidden.shape[0]
-            loss = self.loss(pre_att_dist, opt_att_dist)
-            # loss = -torch.mean(torch.log(torch.sum(torch.min(opt_att_dist, pre_att_dist), dim=-1)))
-            # loss = self.loss_mse(pre_att_dist.view(-1), opt_att_dist.view(-1))
-        else:
-            # loss = torch.mean(torch.log(torch.sum(torch.min(opt_att_dist, pre_att_dist), dim=-1)))
-            # loss = torch.abs(pre_att_dist - opt_att_dist)/(opt_att_dist+1e-9).mean()
-            loss = self.loss(pre_att_dist, opt_att_dist)
+        # print(torch.sum(pre_att_dist[:,:]))
+        # print(torch.sum(opt_att_dist[:,:]))
+
+        loss = self.loss(pre_att_dist, opt_att_dist)
 
         return loss
 
@@ -206,20 +178,10 @@ class LargePreAtt(nn.Module):
         return mask  # (batch_size, seq_len)
 
 
-def cos_sim(a, b):
-    a = a.view(-1)
-    b = b.view(-1)
-    dot = torch.dot(a, b)
-    a_ = torch.sqrt(torch.sum(a**2))
-    b_ = torch.sqrt(torch.sum(b ** 2))
-
-    return (dot/(a_ * b_))/2+0.5
-
-
 if __name__ == '__main__':
     bart = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn', use_cache=False)
     tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
-    for i in range(0, 2):
-        a = TrainPreAtt(bart, tokenizer, 'newsroom/layer2_100k_{}'.format(i), 1, 1, 'newsroom')
-        a.train()
+
+    a = TrainPreAtt(bart, tokenizer, 'cnndm/layer2+_+', 1, 1, 'cnndm')
+    a.train()
 
