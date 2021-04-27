@@ -16,7 +16,7 @@ class TrainPreAtt(object):
         self.ckpt = ckpt
         self.dataset = dataset
         self.peg = use_peg
-        if use_peg and dataset in ['xsum','newsroom']:
+        if use_peg and dataset in ['xsum','newsroom','wikihow','reddit']:
             self.ml = 512
         else:
             self.ml = 1024

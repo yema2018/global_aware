@@ -51,7 +51,7 @@ def inference(summ, tokenizer, summ_use):
     ml = 1024
     if args.peg:
         model_fix = 'peg'
-        if args.dataset in ['xsum', 'newsroom']:
+        if args.dataset in ['xsum', 'newsroom','wikihow','reddit']:
             ml = 512
     device = torch.device('cuda: {}'.format(args.cuda))
 
@@ -117,7 +117,7 @@ def inference(summ, tokenizer, summ_use):
                 for i in out_list:
                     with open('{}/att_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset,model_fix, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
-                        fw.write(' .'.join(i.split('.')))
+                        fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
             if args.vanilla_no:
                 summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
@@ -133,7 +133,7 @@ def inference(summ, tokenizer, summ_use):
                     with open(
                             '{}/vanilla_no_beam{}.txt'.format(args.dataset, args.beam_size),
                             'a', encoding='utf8') as fw:
-                        fw.write(' .'.join(i.split('.')))
+                        fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
             if args.vanilla:
                 summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
@@ -147,7 +147,7 @@ def inference(summ, tokenizer, summ_use):
                 for i in out_list:
                     with open('{}/vanilla_{}_beam{}.txt'.format(args.dataset, model_fix, args.beam_size),
                               'a', encoding='utf8') as fw:
-                        fw.write(' .'.join(i.split('.')))
+                        fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
 
             if args.cheat:
@@ -172,14 +172,14 @@ def inference(summ, tokenizer, summ_use):
                 for i in out_list:
                     with open('{}/cheat_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset, model_fix, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
-                        fw.write(' .'.join(i.split('.')))
+                        fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
 
     print('inference_time: {}'.format(time.time()-start))
 
 
 if __name__ == '__main__':
-    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','big-patent']
+    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','reddit','wikihow','arxiv']
     summ_use = None
     if args.dataset == 'cnndm':
         if not args.peg:
@@ -223,13 +223,27 @@ if __name__ == '__main__':
             if not args.train:
                 summ_use = PegasusForConditionalGeneration.from_pretrained(path)
             tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-billsum')
-    if args.dataset == 'big-patent':
+    if args.dataset == 'reddit':
         if args.peg:
-            path = 'google/pegasus-big_patent'
+            path = 'google/pegasus-reddit_tifu'
             summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
             if not args.train:
                 summ_use = PegasusForConditionalGeneration.from_pretrained(path)
-            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-big_patent')
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-reddit_tifu')
+    if args.dataset == 'wikihow':
+        if args.peg:
+            path = 'google/pegasus-wikihow'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-wikihow')
+    if args.dataset == 'arxiv':
+        if args.peg:
+            path = 'google/pegasus-arxiv'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-arxiv')
 
 
     if args.train:
