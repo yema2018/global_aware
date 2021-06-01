@@ -8,7 +8,7 @@ import time
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Attention-aware Inference')
+    parser = argparse.ArgumentParser(description='Global-aware Inference')
     parser.add_argument('--ckpt', nargs='?', default='', help='checkpoint path')
     parser.add_argument('--dataset', nargs='?', default='', help='cnndm or xsum')
 
@@ -16,8 +16,8 @@ def parse_args():
     parser.add_argument('--epoch', type=int, default=4, help='epoch')
 
     parser.add_argument('--beam_size', type=int, default=4, help='beam search size.')
-    parser.add_argument('--beta', type=float, default=8, help='the coefficient of att-aware')
-    parser.add_argument('--gamma', type=float, default=1, help='the coefficient of length penalty in att-aware')
+    parser.add_argument('--beta', type=float, default=12, help='the coefficient of global-aware')
+    parser.add_argument('--gamma', type=float, default=1, help='the coefficient of length penalty in global-aware')
     parser.add_argument('--repetition_penalty', type=float, default=1.0,
                         help="The parameter for repetition penalty. 1.0 means no penalty. See `this paper"
                              " <https://arxiv.org/pdf/1909.05858.pdf>`__ for more details.")
@@ -27,14 +27,11 @@ def parse_args():
     parser.add_argument('--cuda', type=int, default=0,
                         help='the index of cuda used.')
 
-    parser.add_argument('--trunc', type=int, default=1024,
-                        help='truncate inp of att-pred-model into this length.')
-
     parser.add_argument('--train', dest='train', action='store_true', help='training.')
-    parser.add_argument('--att_aware', dest='att_aware', action='store_true',
-                        help='enter attention-aware inference.')
+    parser.add_argument('--global_aware', dest='global_aware', action='store_true',
+                        help='enter global-aware inference.')
     parser.add_argument('--vanilla', dest='vanilla', action='store_true', help='enter vanilla beam search.')
-    parser.add_argument('--cheat', dest='cheat', action='store_true', help='enter cheating att-aware inference.')
+    parser.add_argument('--oracle', dest='oracle', action='store_true', help='enter oracle global-aware inference.')
     parser.add_argument('--vanilla_no', dest='vanilla_no', action='store_true', help='enter vanilla beam search without'
                                                                                      'length limits.')
     parser.add_argument('--peg', dest='peg', action='store_true', help='use pegasus')
@@ -55,8 +52,8 @@ def inference(summ, tokenizer, summ_use):
             ml = 512
     device = torch.device('cuda: {}'.format(args.cuda))
 
-    if args.att_aware:
-        print('enter attention-aware inference.')
+    if args.global_aware:
+        print('enter global-aware inference.')
         pre_att_model =PreAttModel(layers=2, d_model=1024, num_heads=16, dff=4096, rate=0.0)
 
         try:
@@ -75,8 +72,8 @@ def inference(summ, tokenizer, summ_use):
     if args.vanilla:
         print('enter vanilla beam search.')
 
-    if args.cheat:
-        print('enter cheating att-aware inference.')
+    if args.oracle:
+        print('enter oracle global-aware inference.')
 
     if args.vanilla_no:
         print('enter vanilla beam search without length limits.')
@@ -97,13 +94,13 @@ def inference(summ, tokenizer, summ_use):
         inp, tar, inp_mask, tar_mask = batch_contents
         inp = inp.to(device)
         inp_mask = inp_mask.to(device)
-        if args.cheat:
+        if args.oracle:
             tar = tar.to(device)
             tar_mask = tar_mask.to(device)
         with torch.no_grad():
-            if args.att_aware:
+            if args.global_aware:
                 encoder_out = encoder(inp, inp_mask, return_dict=True).last_hidden_state
-                opt = pre_att_model(encoder_out[:, :args.trunc, :], inp_mask[:, :args.trunc])
+                opt = pre_att_model(encoder_out, inp_mask)
 
                 summary_ids, _ = summ_g.generate(inp, attention_mask=inp_mask, num_beams=args.beam_size,
                                             early_stopping=True, opt_att_dist=opt, min_length=1, length_penalty=1.0,
@@ -115,7 +112,7 @@ def inference(summ, tokenizer, summ_use):
                 print(out_list)
 
                 for i in out_list:
-                    with open('{}/att_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset,model_fix, args.beta, args.beam_size, args.gamma),
+                    with open('{}/global_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset,model_fix, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
@@ -150,7 +147,7 @@ def inference(summ, tokenizer, summ_use):
                         fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
 
-            if args.cheat:
+            if args.oracle:
                 summ_output = summ(input_ids=inp, attention_mask=inp_mask, decoder_input_ids=tar[:, :-1],
                                    output_attentions=True, output_hidden_states=True, return_dict=True)
 
@@ -170,7 +167,7 @@ def inference(summ, tokenizer, summ_use):
                             summary_ids]
                 print(out_list)
                 for i in out_list:
-                    with open('{}/cheat_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset, model_fix, args.beta, args.beam_size, args.gamma),
+                    with open('{}/oracle_{}_beta{}_beam{}_ga{}.txt'.format(args.dataset, model_fix, args.beta, args.beam_size, args.gamma),
                               'a', encoding='utf8') as fw:
                         fw.write(' .'.join(i.split('.')).replace('<n>', ' '))
                         fw.write('\n')
