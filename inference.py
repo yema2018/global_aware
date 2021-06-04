@@ -10,7 +10,7 @@ import time
 def parse_args():
     parser = argparse.ArgumentParser(description='Global-aware Inference')
     parser.add_argument('--ckpt', nargs='?', default='', help='checkpoint path')
-    parser.add_argument('--dataset', nargs='?', default='', help='cnndm or xsum')
+    parser.add_argument('--dataset', nargs='?', default='', help='dataset name')
 
     parser.add_argument('--batch_size', type=int, default=1, help='batch size')
     parser.add_argument('--epoch', type=int, default=4, help='epoch')
@@ -176,7 +176,8 @@ def inference(summ, tokenizer, summ_use):
 
 
 if __name__ == '__main__':
-    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','reddit','wikihow','arxiv']
+    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','reddit','wikihow','arxiv'],\
+        '--dataset should be cnndm, xsum, newsroom, multi-news, billsum, reddit, wikihow, arxiv'
     summ_use = None
     if args.dataset == 'cnndm':
         if not args.peg:
