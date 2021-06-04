@@ -176,8 +176,8 @@ def inference(summ, tokenizer, summ_use):
 
 
 if __name__ == '__main__':
-    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','reddit','wikihow','arxiv'],\
-        '--dataset should be cnndm, xsum, newsroom, multi-news, billsum, reddit, wikihow, arxiv'
+    assert args.dataset in ['cnndm','xsum','newsroom','multi-news','billsum','reddit','wikihow','arxiv','pubmed'],\
+        '--dataset should be cnndm, xsum, newsroom, multi-news, billsum, reddit, wikihow, arxiv, pubmed'
     summ_use = None
     if args.dataset == 'cnndm':
         if not args.peg:
@@ -242,6 +242,13 @@ if __name__ == '__main__':
             if not args.train:
                 summ_use = PegasusForConditionalGeneration.from_pretrained(path)
             tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-arxiv')
+    if args.dataset == 'pubmed':
+        if args.peg:
+            path = 'google/pegasus-pubmed'
+            summ = PegasusForConditionalGeneration.from_pretrained(path, use_cache=False)
+            if not args.train:
+                summ_use = PegasusForConditionalGeneration.from_pretrained(path)
+            tokenizer = PegasusTokenizer.from_pretrained('google/pegasus-pubmed')
 
 
     if args.train:
