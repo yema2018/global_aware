@@ -6,7 +6,11 @@ As mentioned in the paper, the code of global-aware inference is based on the ge
 you can download our modified transformers from [here](https://drive.google.com/file/d/1ssonK3onfMF2Zs2gUApNz6D_NlHDMY-9/view?usp=sharing), then install the package by pip, i.e.,
 ```
 pip install -e PATH/TO/transformers-global-aware
-```    
+```   
+or install by
+```
+python PATH/TO/transformers-global-aware/setup.py install
+```
 ## Download processed data and checkpoints
 Click [here](https://drive.google.com/file/d/1x0X2R9_I3qvb1LkeXzAxprvHXVDlK-_4/view?usp=sharing) to download processed datasets (CNN/DM, XSUM, NewsRoom, BillSum, arXiv, PubMed, Reddit_Tifu, Multi-News, WikiHow) and the checkpoint of each attention-prediction model.  
 
