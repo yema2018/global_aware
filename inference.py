@@ -50,7 +50,7 @@ def inference(summ, tokenizer, summ_use):
         model_fix = 'peg'
         if args.dataset in ['xsum', 'newsroom','wikihow','reddit']:
             ml = 512
-    device = torch.device('cuda: {}'.format(args.cuda))
+    device = torch.device('cuda:{}'.format(args.cuda))
 
     if args.global_aware:
         print('enter global-aware inference.')
