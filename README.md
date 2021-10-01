@@ -24,7 +24,7 @@ Just adding '--peg', you can change the summarization model from BART to PEGASUS
 ```
 python inference.py --global_aware --peg --beta 12 --gamma 1 --dataset newsroom --ckpt newsroom/peg_+ --cuda 0 --beam_size 8
 ```  
-Generate with vanilla beam search. Use default config (hyper-parameters) provided by BART and PEGASUS: 
+Generate with beam search. Use default config (hyper-parameters) provided by BART and PEGASUS: 
 ```
 python inference.py --vanilla --dataset cnndm --cuda 0 --beam_size 4
 ``` 
