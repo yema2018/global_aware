@@ -1,5 +1,5 @@
 # Global-aware Inference
-Global attention-aware Beam Search for Neural Abstractive Summarization (NeurIPS 2021)
+Global-aware Beam Search for Neural Abstractive Summarization (NeurIPS 2021)
 
 ## Download the modified transformers package
 As mentioned in the paper, the code of global-aware inference is based on the generation part of [HuggingFace transformers](https://github.com/huggingface/transformers/blob/v3.3.1/src/transformers/generation_utils.py), 
